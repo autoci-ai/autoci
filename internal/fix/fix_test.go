@@ -177,6 +177,9 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	if !plan.PatchGenerated || plan.FixType != InstrumentationFix || plan.Confidence != "high" {
 		t.Fatalf("expected high-confidence instrumentation patch, got %#v", plan)
 	}
+	if plan.Branch != "autoci/instrument-image-pull-failure" || plan.ChangeID != "instrumentation-001" {
+		t.Fatalf("unexpected change metadata: branch=%q change=%#v", plan.Branch, plan.Change)
+	}
 	if len(plan.AffectedJobs) != 2 || plan.AffectedJobs[0] != "integration-test:matrix-03" || plan.AffectedJobs[1] != "integration-test:matrix-11" {
 		t.Fatalf("affected jobs = %#v", plan.AffectedJobs)
 	}
@@ -376,6 +379,9 @@ func TestGenerateUpdatesExistingYarnInstrumentationMetadata(t *testing.T) {
 	if !plan.PatchGenerated || plan.FixType != InstrumentationUpdateFix || !plan.ExistingInstrumentation {
 		t.Fatalf("expected instrumentation update patch, got %#v", plan)
 	}
+	if plan.Branch != "autoci/update-instrumentation-npm-install-failure" || plan.Change.ChangeType != "instrumentation_update" {
+		t.Fatalf("unexpected change metadata: branch=%q change=%#v", plan.Branch, plan.Change)
+	}
 	if plan.Reason != "Existing instrumentation found; adding finding correlation metadata." {
 		t.Fatalf("reason = %q", plan.Reason)
 	}
@@ -431,6 +437,36 @@ func TestGenerateExistingCorrelatedYarnInstrumentationIsIdempotent(t *testing.T)
 	}
 	if !strings.Contains(plan.Reason, "already contains correlated AutoCI yarn install diagnostics instrumentation") {
 		t.Fatalf("reason = %q", plan.Reason)
+	}
+}
+
+func TestRootCauseFixUsesRootCauseChangeBranch(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  frontend-unit-test:
+    steps:
+      - run: yarn install --immutable
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Occurrences:  3,
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessReadyForFix,
+		LogExcerpts:  []string{"yarn install --immutable failed with ETIMEDOUT"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.PatchGenerated || plan.FixType != RootCauseFix {
+		t.Fatalf("expected root-cause patch, got %#v", plan)
+	}
+	if plan.Branch != "autoci/fix-npm-install-failure" || plan.ChangeID != "root-cause-001" {
+		t.Fatalf("unexpected change metadata: branch=%q change=%#v", plan.Branch, plan.Change)
 	}
 }
 

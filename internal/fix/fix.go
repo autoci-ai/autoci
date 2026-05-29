@@ -17,6 +17,8 @@ import (
 type Plan struct {
 	ID                      string              `json:"id"`
 	SourceID                string              `json:"sourceId"`
+	ChangeID                string              `json:"changeId,omitempty"`
+	Change                  *Change             `json:"change,omitempty"`
 	Branch                  string              `json:"branch,omitempty"`
 	Workflow                string              `json:"workflow"`
 	Readiness               lifecycle.Readiness `json:"readiness,omitempty"`
@@ -61,6 +63,13 @@ type Target struct {
 	DerivedFrom []string `json:"derivedFrom,omitempty"`
 }
 
+type Change struct {
+	ID         string `json:"id"`
+	FindingID  string `json:"findingId"`
+	ChangeType string `json:"changeType"`
+	BranchName string `json:"branch"`
+}
+
 type PatchScope struct {
 	FilesChanged          int      `json:"filesChanged"`
 	JobsTouched           []string `json:"jobsTouched"`
@@ -101,6 +110,9 @@ type Hypothesis struct {
 type Record struct {
 	ID                      string              `json:"id"`
 	SourceItemID            string              `json:"sourceItemId"`
+	ChangeID                string              `json:"changeId,omitempty"`
+	Change                  *Change             `json:"change,omitempty"`
+	Changes                 []Change            `json:"changes,omitempty"`
 	Workflow                string              `json:"workflow"`
 	Branch                  string              `json:"branch,omitempty"`
 	Readiness               lifecycle.Readiness `json:"readiness,omitempty"`
@@ -179,6 +191,7 @@ func Generate(options Options) (Plan, error) {
 	}
 
 	if buildInstrumentationPatch(&plan, original, inspection, options) {
+		finalizeChangeMetadata(&plan)
 		if options.DryRun {
 			return normalizePlan(plan), nil
 		}
@@ -224,6 +237,7 @@ func Generate(options Options) (Plan, error) {
 		plan.Reason = "Low-confidence fixes produce plans only. AutoCI needs a more exact target before modifying the workflow."
 		return normalizePlan(plan), nil
 	}
+	finalizeChangeMetadata(&plan)
 	if options.DryRun {
 		return normalizePlan(plan), nil
 	}
@@ -241,9 +255,74 @@ func normalizePlan(plan Plan) Plan {
 	if isInstrumentationFixType(plan.FixType) && plan.InstrumentationID == "" {
 		plan.InstrumentationID = plan.SourceID
 	}
+	finalizeChangeMetadata(&plan)
 	plan.InstrumentationApplied = isInstrumentationFixType(plan.FixType) && plan.PatchApplied
 	plan.PatchScope = normalizePatchScope(plan.PatchScope)
 	return plan
+}
+
+func finalizeChangeMetadata(plan *Plan) {
+	if plan == nil || !plan.PatchGenerated {
+		return
+	}
+	changeType := changeTypeForFixType(plan.FixType)
+	if changeType == "" {
+		return
+	}
+	findingID := strings.TrimSpace(plan.SourceID)
+	if findingID == "" {
+		findingID = strings.TrimPrefix(plan.ID, "fix-")
+	}
+	branch := branchNameForChange(changeType, findingID)
+	changeID := changeIDForType(changeType)
+	plan.ChangeID = changeID
+	plan.Branch = branch
+	plan.Change = &Change{
+		ID:         changeID,
+		FindingID:  findingID,
+		ChangeType: changeType,
+		BranchName: branch,
+	}
+}
+
+func changeTypeForFixType(fixType FixType) string {
+	switch fixType {
+	case InstrumentationFix:
+		return "instrumentation"
+	case InstrumentationUpdateFix:
+		return "instrumentation_update"
+	case RootCauseFix:
+		return "root_cause"
+	default:
+		return ""
+	}
+}
+
+func changeIDForType(changeType string) string {
+	switch changeType {
+	case "instrumentation":
+		return "instrumentation-001"
+	case "instrumentation_update":
+		return "instrumentation-update-001"
+	case "root_cause":
+		return "root-cause-001"
+	default:
+		return slug(changeType) + "-001"
+	}
+}
+
+func branchNameForChange(changeType, findingID string) string {
+	suffix := trimFixPrefix(findingID)
+	switch changeType {
+	case "instrumentation":
+		return "autoci/instrument-" + suffix
+	case "instrumentation_update":
+		return "autoci/update-instrumentation-" + suffix
+	case "root_cause":
+		return "autoci/fix-" + suffix
+	default:
+		return "autoci/" + slug(changeType) + "-" + suffix
+	}
 }
 
 func isInstrumentationFixType(fixType FixType) bool {
@@ -258,9 +337,16 @@ func normalizePatchScope(scope PatchScope) PatchScope {
 
 func NewRecord(plan Plan, dryRun bool) Record {
 	plan = normalizePlan(plan)
+	changes := []Change{}
+	if plan.Change != nil && plan.Change.ID != "" {
+		changes = append(changes, *plan.Change)
+	}
 	return Record{
 		ID:                      "fix-" + trimFixPrefix(plan.ID),
 		SourceItemID:            plan.SourceID,
+		ChangeID:                plan.ChangeID,
+		Change:                  plan.Change,
+		Changes:                 changes,
 		Workflow:                plan.Workflow,
 		Branch:                  plan.Branch,
 		Readiness:               plan.Readiness,

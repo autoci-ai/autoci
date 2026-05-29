@@ -127,7 +127,7 @@ func WriteFix(repoPath string, data any) error {
 		return err
 	}
 	path := filepath.Join(dir, slug(key)+".json")
-	data = mergeExistingAppliedFix(path, data)
+	data = mergeFixState(path, data)
 	payload, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -160,21 +160,26 @@ func ReadFix(repoPath, sourceID string) (Snapshot, error) {
 	return readSnapshotFile(filepath.Join(dir, slug(legacyFixID(sourceID))+".json"))
 }
 
-func mergeExistingAppliedFix(path string, next any) any {
+func mergeFixState(path string, next any) any {
+	merged := mergeFixChangeHistory(nil, next)
 	existing, err := readSnapshotFile(path)
 	if err != nil {
-		return next
+		return merged
 	}
 	var existingData map[string]any
-	if !decodeData(existing.Data, &existingData) || !boolValue(existingData["patchApplied"]) {
-		return next
+	if !decodeData(existing.Data, &existingData) {
+		return merged
 	}
 	var nextData map[string]any
 	if !decodeData(next, &nextData) {
 		return next
 	}
+	nextData["changes"] = mergedFixChanges(existingData, nextData)
+	if !boolValue(existingData["patchApplied"]) {
+		return nextData
+	}
 	if boolValue(nextData["patchApplied"]) || boolValue(nextData["patchGenerated"]) {
-		return next
+		return nextData
 	}
 	existingData["lastRun"] = map[string]any{
 		"patchGenerated": boolValue(nextData["patchGenerated"]),
@@ -182,7 +187,124 @@ func mergeExistingAppliedFix(path string, next any) any {
 		"reason":         stringValue(nextData["reason"]),
 		"idempotent":     isIdempotentFixRun(nextData),
 	}
+	existingData["changes"] = nextData["changes"]
 	return existingData
+}
+
+func mergeFixChangeHistory(existing any, next any) any {
+	var nextData map[string]any
+	if !decodeData(next, &nextData) {
+		return next
+	}
+	var existingData map[string]any
+	if existing != nil {
+		_ = decodeData(existing, &existingData)
+	}
+	nextData["changes"] = mergedFixChanges(existingData, nextData)
+	return nextData
+}
+
+func mergedFixChanges(existingData, nextData map[string]any) []map[string]any {
+	var result []map[string]any
+	seen := map[string]bool{}
+	appendChange := func(change map[string]any) {
+		normalized := normalizeChange(change)
+		if len(normalized) == 0 {
+			return
+		}
+		key := stringValue(normalized["id"]) + "|" + stringValue(normalized["branch"]) + "|" + stringValue(normalized["changeType"])
+		if key == "||" || seen[key] {
+			return
+		}
+		seen[key] = true
+		result = append(result, normalized)
+	}
+	for _, change := range changesFromFixData(existingData) {
+		appendChange(change)
+	}
+	for _, change := range changesFromFixData(nextData) {
+		appendChange(change)
+	}
+	if result == nil {
+		return []map[string]any{}
+	}
+	return result
+}
+
+func changesFromFixData(data map[string]any) []map[string]any {
+	if len(data) == 0 {
+		return nil
+	}
+	var result []map[string]any
+	if values, ok := data["changes"].([]any); ok {
+		for _, value := range values {
+			if change, ok := value.(map[string]any); ok {
+				result = append(result, change)
+			}
+		}
+	}
+	if change, ok := data["change"].(map[string]any); ok {
+		result = append(result, change)
+	}
+	if boolValue(data["patchGenerated"]) || boolValue(data["patchApplied"]) {
+		if synthesized := synthesizeChange(data); len(synthesized) > 0 {
+			result = append(result, synthesized)
+		}
+	}
+	return result
+}
+
+func normalizeChange(change map[string]any) map[string]any {
+	id := stringValue(change["id"])
+	findingID := firstNonEmptyString(stringValue(change["findingId"]), stringValue(change["sourceItemId"]), stringValue(change["sourceId"]))
+	changeType := stringValue(change["changeType"])
+	branch := firstNonEmptyString(stringValue(change["branch"]), stringValue(change["branchName"]))
+	if id == "" && changeType == "" && branch == "" {
+		return nil
+	}
+	return map[string]any{
+		"id":         id,
+		"findingId":  findingID,
+		"changeType": changeType,
+		"branch":     branch,
+	}
+}
+
+func synthesizeChange(data map[string]any) map[string]any {
+	changeType := stringValue(data["fixType"])
+	if changeType == "root_cause" {
+		changeType = "root_cause"
+	}
+	id := stringValue(data["changeId"])
+	if id == "" {
+		id = changeIDForState(changeType)
+	}
+	branch := stringValue(data["branch"])
+	if branch == "" {
+		return nil
+	}
+	return map[string]any{
+		"id":         id,
+		"findingId":  firstNonEmptyString(stringValue(data["sourceItemId"]), stringValue(data["sourceId"])),
+		"changeType": changeType,
+		"branch":     branch,
+	}
+}
+
+func changeIDForState(changeType string) string {
+	switch changeType {
+	case "instrumentation":
+		return "instrumentation-001"
+	case "instrumentation_update":
+		return "instrumentation-update-001"
+	case "root_cause":
+		return "root-cause-001"
+	default:
+		if changeType == "" {
+			return ""
+		}
+		return changeType + "-001"
+	}
 }
 
 func isIdempotentFixRun(data map[string]any) bool {
@@ -426,6 +548,15 @@ func stringValue(value any) string {
 func boolValue(value any) bool {
 	typed, ok := value.(bool)
 	return ok && typed
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func stringSlice(value any) []string {

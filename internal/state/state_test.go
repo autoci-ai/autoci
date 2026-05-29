@@ -293,6 +293,121 @@ func TestWriteFixPreservesAppliedRecordOnIdempotentNoOp(t *testing.T) {
 	}
 }
 
+func TestWriteFixPersistsChangeHistoryForOneFinding(t *testing.T) {
+	dir := t.TempDir()
+	instrumentation := map[string]any{
+		"id":             "fix-npm-install-failure",
+		"sourceItemId":   "failure-theme-npm-install-failure",
+		"workflow":       "pr.yml",
+		"fixType":        "instrumentation",
+		"branch":         "autoci/instrument-npm-install-failure",
+		"changeId":       "instrumentation-001",
+		"patchGenerated": true,
+		"patchApplied":   true,
+		"change": map[string]any{
+			"id":         "instrumentation-001",
+			"findingId":  "failure-theme-npm-install-failure",
+			"changeType": "instrumentation",
+			"branch":     "autoci/instrument-npm-install-failure",
+		},
+	}
+	if err := WriteFix(dir, instrumentation); err != nil {
+		t.Fatal(err)
+	}
+	update := map[string]any{
+		"id":             "fix-npm-install-failure",
+		"sourceItemId":   "failure-theme-npm-install-failure",
+		"workflow":       "pr.yml",
+		"fixType":        "instrumentation_update",
+		"branch":         "autoci/update-instrumentation-npm-install-failure",
+		"changeId":       "instrumentation-update-001",
+		"patchGenerated": true,
+		"patchApplied":   true,
+		"change": map[string]any{
+			"id":         "instrumentation-update-001",
+			"findingId":  "failure-theme-npm-install-failure",
+			"changeType": "instrumentation_update",
+			"branch":     "autoci/update-instrumentation-npm-install-failure",
+		},
+	}
+	if err := WriteFix(dir, update); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadFix(dir, "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored struct {
+		SourceItemID string `json:"sourceItemId"`
+		Branch       string `json:"branch"`
+		Changes      []struct {
+			ID         string `json:"id"`
+			FindingID  string `json:"findingId"`
+			ChangeType string `json:"changeType"`
+			Branch     string `json:"branch"`
+		} `json:"changes"`
+	}
+	if !snapshotData(snapshot.Data, &stored) {
+		t.Fatalf("could not decode fix snapshot: %#v", snapshot)
+	}
+	if stored.SourceItemID != "failure-theme-npm-install-failure" {
+		t.Fatalf("finding id changed: %#v", stored)
+	}
+	if stored.Branch != "autoci/update-instrumentation-npm-install-failure" {
+		t.Fatalf("latest branch = %q", stored.Branch)
+	}
+	if len(stored.Changes) != 2 {
+		t.Fatalf("changes = %#v", stored.Changes)
+	}
+	if stored.Changes[0].Branch == stored.Changes[1].Branch {
+		t.Fatalf("branch collision in changes: %#v", stored.Changes)
+	}
+	for _, change := range stored.Changes {
+		if change.FindingID != "failure-theme-npm-install-failure" {
+			t.Fatalf("change not tied to stable finding id: %#v", change)
+		}
+	}
+}
+
+func TestWriteFixDoesNotDuplicateChangeHistoryOnRepeatedRuns(t *testing.T) {
+	dir := t.TempDir()
+	record := map[string]any{
+		"id":             "fix-image-pull-failure",
+		"sourceItemId":   "failure-theme-image-pull-failure",
+		"workflow":       "pr.yml",
+		"fixType":        "instrumentation",
+		"branch":         "autoci/instrument-image-pull-failure",
+		"changeId":       "instrumentation-001",
+		"patchGenerated": true,
+		"patchApplied":   false,
+		"change": map[string]any{
+			"id":         "instrumentation-001",
+			"findingId":  "failure-theme-image-pull-failure",
+			"changeType": "instrumentation",
+			"branch":     "autoci/instrument-image-pull-failure",
+		},
+	}
+	if err := WriteFix(dir, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFix(dir, record); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadFix(dir, "failure-theme-image-pull-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored struct {
+		Changes []map[string]any `json:"changes"`
+	}
+	if !snapshotData(snapshot.Data, &stored) {
+		t.Fatalf("could not decode fix snapshot: %#v", snapshot)
+	}
+	if len(stored.Changes) != 1 {
+		t.Fatalf("changes duplicated: %#v", stored.Changes)
+	}
+}
+
 func snapshotData(value any, target any) bool {
 	data, err := json.Marshal(value)
 	if err != nil {
