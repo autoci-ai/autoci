@@ -12,7 +12,7 @@ import (
 )
 
 func WriteProfileTerminal(w io.Writer, discovered []scanner.Workflow, runtimeProfile *profile.Profile) {
-	fmt.Fprintln(w, "AutoCI Depot runtime profile")
+	fmt.Fprintln(w, "AutoCI runtime observation")
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Local workflows discovered: %d\n", len(discovered))
 	fmt.Fprintf(w, "Runtime workflows analyzed: %d\n", len(runtimeProfile.Workflows))
@@ -25,10 +25,10 @@ func WriteProfileTerminal(w io.Writer, discovered []scanner.Workflow, runtimePro
 		fmt.Fprintf(w, "- %s: %d runs, avg %s, P95 %s, failures %.0f%%\n", workflow.Name, workflow.RunsAnalyzed, profile.FormatDuration(workflow.AvgDuration), profile.FormatDuration(workflow.P95Duration), workflow.FailureRate*100)
 	}
 	if len(runtimeProfile.Findings) == 0 {
-		fmt.Fprintln(w, "\nOptimization opportunities: none with enough runtime evidence.")
+		fmt.Fprintln(w, "\nEvidence-backed observations: none with enough runtime evidence.")
 		return
 	}
-	fmt.Fprintln(w, "\nOptimization opportunities:")
+	fmt.Fprintln(w, "\nEvidence-backed observations:")
 	for _, finding := range runtimeProfile.Findings {
 		target := finding.Workflow
 		if finding.Job != "" {
@@ -115,10 +115,10 @@ func WriteProfileMarkdown(w io.Writer, discovered []scanner.Workflow, runtimePro
 		fmt.Fprintln(w, "No high runtime variance jobs were observed in the sampled history.")
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "## Optimization Opportunities")
+	fmt.Fprintln(w, "## Evidence-Backed Observations")
 	fmt.Fprintln(w)
 	if len(runtimeProfile.Findings) == 0 {
-		fmt.Fprintln(w, "No optimization opportunities had enough runtime evidence.")
+		fmt.Fprintln(w, "No observations had enough runtime evidence.")
 	} else {
 		for _, finding := range runtimeProfile.Findings {
 			target := finding.Workflow

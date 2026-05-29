@@ -53,6 +53,19 @@ Write a Markdown runtime profile:
 autoci profile --report profile.md
 ```
 
+Write a machine-consumable runtime profile:
+
+```bash
+autoci profile --workflow pr.yml --format json
+```
+
+Generate research hypotheses and proposed experiments:
+
+```bash
+autoci research --workflow pr.yml
+autoci research --workflow pr.yml --format json
+```
+
 Validate with Depot:
 
 ```bash
@@ -103,7 +116,20 @@ Useful options:
 autoci profile --limit 100
 autoci profile --repo owner/name
 autoci profile --workflow pr.yml
+autoci profile --format json
 autoci profile --report profile.md
 ```
 
-Workflow selection is explicit. AutoCI discovers workflows from `.depot/workflows/*.yml` and `.depot/workflows/*.yaml`. If exactly one workflow exists, `analyze` and `profile` select it automatically. If multiple workflows exist, pass `--workflow` with either the basename, such as `pr.yml`, or the repo-relative path, such as `.depot/workflows/pr.yml`.
+Workflow selection is explicit. AutoCI discovers workflows from `.depot/workflows/*.yml` and `.depot/workflows/*.yaml`. If exactly one workflow exists, `analyze`, `profile`, and `research` select it automatically. If multiple workflows exist, pass `--workflow` with either the basename, such as `pr.yml`, or the repo-relative path, such as `.depot/workflows/pr.yml`.
+
+## Research Planning
+
+`autoci research` converts profile findings into structured optimization hypotheses and proposed experiments. It does not execute changes or run experiments.
+
+Research is intended to bridge observation into planning:
+
+```text
+observe -> research -> experiment -> validate -> measure -> remember
+```
+
+Current research output includes a top recommendation and opportunities with hypothesis, evidence, experiment, success criteria, risk, and estimated impact.

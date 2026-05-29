@@ -16,6 +16,10 @@ func newProfileCommand() *cobra.Command {
 		Short: "Profile CI execution history",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reportPath := viper.GetString("profile-report")
+			format := viper.GetString("profile-format")
+			if format != "text" && format != "json" {
+				return fmt.Errorf("unsupported format %q: expected text or json", format)
+			}
 			limit := viper.GetInt("profile-limit")
 			repo := viper.GetString("profile-repo")
 
@@ -35,7 +39,11 @@ func newProfileCommand() *cobra.Command {
 			}
 			profile, err := depot.Profile(cmd.Context())
 			if err != nil {
-				return fmt.Errorf("profile Depot CI history: %w", err)
+				return fmt.Errorf("profile CI history: %w", err)
+			}
+			workflowName := scanner.WorkflowName(cfg.Path, workflow)
+			if format == "json" {
+				return report.WriteProfileJSON(cmd.OutOrStdout(), workflowName, profile)
 			}
 			report.WriteProfileTerminal(cmd.OutOrStdout(), []scanner.Workflow{workflow}, profile)
 			if reportPath != "" {
@@ -46,10 +54,12 @@ func newProfileCommand() *cobra.Command {
 	}
 
 	cmd.Flags().String("report", "", "write a Markdown profile report to this path")
+	cmd.Flags().String("format", "text", "output format: text or json")
 	cmd.Flags().Int("limit", 50, "number of recent Depot workflows to inspect")
 	cmd.Flags().String("repo", "", "Depot repo filter in owner/name format")
 	cmd.Flags().String("workflow", "", "workflow to profile by basename or relative path")
 	_ = viper.BindPFlag("profile-report", cmd.Flags().Lookup("report"))
+	_ = viper.BindPFlag("profile-format", cmd.Flags().Lookup("format"))
 	_ = viper.BindPFlag("profile-limit", cmd.Flags().Lookup("limit"))
 	_ = viper.BindPFlag("profile-repo", cmd.Flags().Lookup("repo"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
