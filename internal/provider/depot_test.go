@@ -3,6 +3,8 @@ package provider
 import (
 	"testing"
 	"time"
+
+	"github.com/autoci-ai/autoci/internal/profile"
 )
 
 func TestBuilderAggregatesRuntimeEvidence(t *testing.T) {
@@ -54,6 +56,59 @@ func TestBuilderAggregatesRuntimeEvidence(t *testing.T) {
 	}
 	if len(result.Findings) == 0 {
 		t.Fatal("expected runtime findings")
+	}
+}
+
+func TestFindingsRankAndClassifyRuntimeEvidence(t *testing.T) {
+	workflows := []profile.WorkflowProfile{{
+		Name:         "pr",
+		RunsAnalyzed: 10,
+		FailureRate:  0.20,
+		Jobs: []profile.JobProfile{
+			{Name: "gate", RunsAnalyzed: 10, FailureRate: 0.30, AvgDuration: time.Minute, ContributionPct: 1, IsAggregator: true, DependsOnCount: 5},
+			{Name: "acceptance-tests", RunsAnalyzed: 10, FailureRate: 0.10, AvgDuration: 3 * time.Minute, ContributionPct: 12},
+			{Name: "integration-tests", RunsAnalyzed: 10, AvgDuration: 17 * time.Minute, P95Duration: 28 * time.Minute, ContributionPct: 43},
+			{Name: "docs", RunsAnalyzed: 10, AvgDuration: 7 * time.Minute, P95Duration: 8 * time.Minute, ContributionPct: 4},
+			{Name: "cache-sensitive", RunsAnalyzed: 10, AvgDuration: 4 * time.Minute, MinDuration: 2 * time.Minute, MaxDuration: 24 * time.Minute, ContributionPct: 8},
+		},
+	}}
+
+	findings := findingsFor(workflows)
+	ids := make([]string, 0, len(findings))
+	titles := map[string]string{}
+	for _, finding := range findings {
+		ids = append(ids, finding.ID)
+		titles[finding.ID] = finding.Title
+	}
+
+	wantOrder := []string{"repeated-failures", "flaky-job", "failure-aggregation-job", "high-leverage-slow-job", "long-running-job", "high-variance"}
+	for i, want := range wantOrder {
+		if len(ids) <= i || ids[i] != want {
+			t.Fatalf("finding order = %v, want prefix %v", ids, wantOrder)
+		}
+	}
+	if titles["long-running-job"] != "Long-running job" {
+		t.Fatalf("expected long-running title, got %q", titles["long-running-job"])
+	}
+	if titles["high-leverage-slow-job"] != "High-leverage slow job" {
+		t.Fatalf("expected high-leverage title, got %q", titles["high-leverage-slow-job"])
+	}
+}
+
+func TestAggregationJobIsNotClassifiedAsFlaky(t *testing.T) {
+	workflows := []profile.WorkflowProfile{{
+		Name: "pr",
+		Jobs: []profile.JobProfile{
+			{Name: "required-status", RunsAnalyzed: 5, FailureRate: 0.40, IsAggregator: true, DependsOnCount: 6},
+		},
+	}}
+
+	findings := findingsFor(workflows)
+	if len(findings) != 1 {
+		t.Fatalf("expected one finding, got %d", len(findings))
+	}
+	if findings[0].ID != "failure-aggregation-job" {
+		t.Fatalf("expected aggregation finding, got %s", findings[0].ID)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"time"
 
 	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/scanner"
@@ -65,12 +66,12 @@ func WriteProfileMarkdown(w io.Writer, discovered []scanner.Workflow, runtimePro
 		fmt.Fprintf(w, "| %s | %d | %s | %s | %.0f%% |\n", workflow.Name, workflow.RunsAnalyzed, profile.FormatDuration(workflow.AvgDuration), profile.FormatDuration(workflow.P95Duration), workflow.FailureRate*100)
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "## Top Slow Jobs")
+	fmt.Fprintln(w, "## Top Runtime Contributors")
 	fmt.Fprintln(w)
 	for _, job := range topJobs(runtimeProfile.Workflows, func(a, b profile.JobProfile) bool {
-		return a.AvgDuration > b.AvgDuration
+		return a.ContributionPct > b.ContributionPct
 	}, 5) {
-		fmt.Fprintf(w, "- **%s / %s**: avg %s, P95 %s, %.0f%% of measured job runtime\n", job.workflow, job.JobProfile.Name, profile.FormatDuration(job.JobProfile.AvgDuration), profile.FormatDuration(job.JobProfile.P95Duration), job.JobProfile.ContributionPct)
+		fmt.Fprintf(w, "- **%s / %s**: %.0f%% of measured job runtime, avg %s, P95 %s\n", job.workflow, job.JobProfile.Name, job.JobProfile.ContributionPct, profile.FormatDuration(job.JobProfile.AvgDuration), profile.FormatDuration(job.JobProfile.P95Duration))
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Top Flaky Jobs")
@@ -80,14 +81,38 @@ func WriteProfileMarkdown(w io.Writer, discovered []scanner.Workflow, runtimePro
 	}, 5)
 	wroteFlaky := false
 	for _, job := range flaky {
-		if job.JobProfile.FailureRate <= 0 {
+		if job.JobProfile.FailureRate <= 0 || job.JobProfile.IsAggregator {
 			continue
 		}
 		wroteFlaky = true
 		fmt.Fprintf(w, "- **%s / %s**: %.0f%% failure rate across %d runs\n", job.workflow, job.JobProfile.Name, job.JobProfile.FailureRate*100, job.JobProfile.RunsAnalyzed)
 	}
 	if !wroteFlaky {
-		fmt.Fprintln(w, "No job failures were observed in the sampled history.")
+		fmt.Fprintln(w, "No independently flaky jobs were observed in the sampled history.")
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## Top Long-Running Jobs")
+	fmt.Fprintln(w)
+	for _, job := range topJobs(runtimeProfile.Workflows, func(a, b profile.JobProfile) bool {
+		return a.AvgDuration > b.AvgDuration
+	}, 5) {
+		fmt.Fprintf(w, "- **%s / %s**: avg %s, P95 %s, %.0f%% of measured job runtime\n", job.workflow, job.JobProfile.Name, profile.FormatDuration(job.JobProfile.AvgDuration), profile.FormatDuration(job.JobProfile.P95Duration), job.JobProfile.ContributionPct)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "## High Variance Jobs")
+	fmt.Fprintln(w)
+	wroteVariance := false
+	for _, job := range topJobs(runtimeProfile.Workflows, func(a, b profile.JobProfile) bool {
+		return a.MaxDuration-a.MinDuration > b.MaxDuration-b.MinDuration
+	}, 5) {
+		if job.JobProfile.RunsAnalyzed < 3 || job.JobProfile.MinDuration <= 0 || job.JobProfile.MaxDuration-job.JobProfile.MinDuration < 5*time.Minute {
+			continue
+		}
+		wroteVariance = true
+		fmt.Fprintf(w, "- **%s / %s**: %s-%s across %d runs\n", job.workflow, job.JobProfile.Name, profile.FormatDuration(job.JobProfile.MinDuration), profile.FormatDuration(job.JobProfile.MaxDuration), job.JobProfile.RunsAnalyzed)
+	}
+	if !wroteVariance {
+		fmt.Fprintln(w, "No high runtime variance jobs were observed in the sampled history.")
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Optimization Opportunities")
@@ -107,6 +132,7 @@ func WriteProfileMarkdown(w io.Writer, discovered []scanner.Workflow, runtimePro
 			fmt.Fprintf(w, "- Recommendation: %s\n\n", finding.Recommendation)
 		}
 	}
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "## Supporting Evidence")
 	fmt.Fprintln(w)
 	for _, workflow := range runtimeProfile.Workflows {

@@ -186,9 +186,12 @@ type workflowNode struct {
 
 type jobNode struct {
 	JobKey     string        `json:"job_key"`
+	Name       string        `json:"name"`
 	Status     string        `json:"status"`
 	StartedAt  string        `json:"started_at"`
 	FinishedAt string        `json:"finished_at"`
+	Needs      []string      `json:"needs"`
+	DependsOn  []string      `json:"depends_on"`
 	Attempts   []attemptNode `json:"attempts"`
 }
 
@@ -211,9 +214,11 @@ type workflowAggregate struct {
 }
 
 type jobAggregate struct {
-	name      string
-	durations []time.Duration
-	failures  int
+	name           string
+	durations      []time.Duration
+	failures       int
+	dependsOnCount int
+	aggregator     bool
 }
 
 func newBuilder() *builder {
@@ -241,11 +246,15 @@ func (b *builder) add(detail workflowDetail) {
 		aggregate.failures++
 	}
 	for _, job := range detail.Jobs {
-		jobName := normalizeJobName(job.JobKey, detail.Workflow.WorkflowPath)
+		jobName := normalizeJobName(job.JobKey, job.Name, detail.Workflow.WorkflowPath)
 		jobAgg := aggregate.jobs[jobName]
 		if jobAgg == nil {
 			jobAgg = &jobAggregate{name: jobName}
 			aggregate.jobs[jobName] = jobAgg
+		}
+		jobAgg.dependsOnCount = maxInt(jobAgg.dependsOnCount, jobDependsOnCount(job))
+		if isAggregationJob(jobName, jobAgg.dependsOnCount) {
+			jobAgg.aggregator = true
 		}
 		if duration := jobDuration(job); duration > 0 {
 			jobAgg.durations = append(jobAgg.durations, duration)
@@ -256,7 +265,10 @@ func (b *builder) add(detail workflowDetail) {
 	}
 }
 
-func normalizeJobName(jobKey, workflowPath string) string {
+func normalizeJobName(jobKey, name, workflowPath string) string {
+	if name != "" {
+		return name
+	}
 	if workflowPath != "" {
 		if name := strings.TrimPrefix(jobKey, workflowPath+":"); name != jobKey && name != "" {
 			return name
@@ -269,6 +281,24 @@ func normalizeJobName(jobKey, workflowPath string) string {
 		return "unknown job"
 	}
 	return jobKey
+}
+
+func jobDependsOnCount(job jobNode) int {
+	if len(job.Needs) > 0 {
+		return len(job.Needs)
+	}
+	return len(job.DependsOn)
+}
+
+func isAggregationJob(name string, dependsOnCount int) bool {
+	lower := strings.ToLower(name)
+	aggregationNames := []string{"gate", "required", "status", "aggregate", "summary"}
+	for _, term := range aggregationNames {
+		if lower == term || strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return dependsOnCount >= 4
 }
 
 func (b *builder) profile() *profile.Profile {
@@ -288,13 +318,15 @@ func (b *builder) profile() *profile.Profile {
 		}
 		for _, job := range aggregate.jobs {
 			jobProfile := profile.JobProfile{
-				Name:         job.name,
-				RunsAnalyzed: len(job.durations),
-				AvgDuration:  avg(job.durations),
-				P95Duration:  percentile(job.durations, 0.95),
-				FailureRate:  rate(job.failures, len(job.durations)),
-				MinDuration:  min(job.durations),
-				MaxDuration:  max(job.durations),
+				Name:           job.name,
+				RunsAnalyzed:   len(job.durations),
+				AvgDuration:    avg(job.durations),
+				P95Duration:    percentile(job.durations, 0.95),
+				FailureRate:    rate(job.failures, len(job.durations)),
+				MinDuration:    min(job.durations),
+				MaxDuration:    max(job.durations),
+				DependsOnCount: job.dependsOnCount,
+				IsAggregator:   job.aggregator,
 			}
 			if totalAvg > 0 {
 				jobProfile.ContributionPct = float64(jobProfile.AvgDuration) / float64(totalAvg) * 100
@@ -409,19 +441,16 @@ func rate(count, total int) float64 {
 	return float64(count) / float64(total)
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 	var findings []profile.Finding
 	for _, workflow := range workflows {
-		if workflow.RunsAnalyzed >= 2 && workflow.AvgDuration >= 10*time.Minute {
-			findings = append(findings, profile.Finding{
-				ID:             "slow-workflow",
-				Title:          "Slow workflow",
-				Severity:       "medium",
-				Workflow:       workflow.Name,
-				Evidence:       fmt.Sprintf("Average duration %s across %d runs; P95 %s.", profile.FormatDuration(workflow.AvgDuration), workflow.RunsAnalyzed, profile.FormatDuration(workflow.P95Duration)),
-				Recommendation: "Focus first on the slowest jobs in this workflow; they set the practical optimization ceiling.",
-			})
-		}
 		if workflow.RunsAnalyzed >= 3 && workflow.FailureRate >= 0.10 {
 			findings = append(findings, profile.Finding{
 				ID:             "repeated-failures",
@@ -432,42 +461,50 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 				Recommendation: "Stabilize recurring workflow failures before optimizing speed.",
 			})
 		}
-		if len(workflow.Jobs) == 0 {
-			continue
-		}
-		top := workflow.Jobs[0]
-		if top.RunsAnalyzed >= 2 && top.ContributionPct >= 40 {
-			findings = append(findings, profile.Finding{
-				ID:             "runtime-concentration",
-				Title:          "Runtime concentrated in one job",
-				Severity:       "high",
-				Workflow:       workflow.Name,
-				Job:            top.Name,
-				Evidence:       fmt.Sprintf("%s consumes %.0f%% of measured job runtime; average %s, P95 %s.", top.Name, top.ContributionPct, profile.FormatDuration(top.AvgDuration), profile.FormatDuration(top.P95Duration)),
-				Recommendation: "Treat this as the highest leverage optimization target.",
-			})
-		}
 		for _, job := range workflow.Jobs {
-			if job.RunsAnalyzed >= 2 && job.AvgDuration >= 5*time.Minute {
+			if job.RunsAnalyzed >= 3 && job.FailureRate >= 0.05 {
+				if job.IsAggregator {
+					findings = append(findings, profile.Finding{
+						ID:             "failure-aggregation-job",
+						Title:          "Failure aggregation job",
+						Severity:       "medium",
+						Workflow:       workflow.Name,
+						Job:            job.Name,
+						Evidence:       aggregationEvidence(job),
+						Recommendation: "This job appears to aggregate upstream job results. Investigate the upstream failures instead of treating this job as independently flaky.",
+					})
+				} else {
+					findings = append(findings, profile.Finding{
+						ID:             "flaky-job",
+						Title:          "Flaky job",
+						Severity:       "high",
+						Workflow:       workflow.Name,
+						Job:            job.Name,
+						Evidence:       fmt.Sprintf("Failure rate %.0f%% across %d runs.", job.FailureRate*100, job.RunsAnalyzed),
+						Recommendation: "Investigate instability before adding retries.",
+					})
+				}
+			}
+			if job.RunsAnalyzed >= 2 && job.ContributionPct >= 15 && job.AvgDuration >= 2*time.Minute {
 				findings = append(findings, profile.Finding{
-					ID:             "slow-job",
-					Title:          "Slow job",
+					ID:             "high-leverage-slow-job",
+					Title:          "High-leverage slow job",
 					Severity:       "medium",
 					Workflow:       workflow.Name,
 					Job:            job.Name,
 					Evidence:       fmt.Sprintf("Average duration %s; P95 %s; consumes %.0f%% of measured job runtime.", profile.FormatDuration(job.AvgDuration), profile.FormatDuration(job.P95Duration), job.ContributionPct),
-					Recommendation: "Investigate sharding, dependency setup, and expensive test groups for this job.",
+					Recommendation: "This job is a high-leverage optimization target.",
 				})
 			}
-			if job.RunsAnalyzed >= 3 && job.FailureRate >= 0.05 {
+			if job.RunsAnalyzed >= 2 && job.AvgDuration >= 5*time.Minute && job.ContributionPct < 15 {
 				findings = append(findings, profile.Finding{
-					ID:             "flaky-job",
-					Title:          "Flaky job",
-					Severity:       "high",
+					ID:             "long-running-job",
+					Title:          "Long-running job",
+					Severity:       "medium",
 					Workflow:       workflow.Name,
 					Job:            job.Name,
-					Evidence:       fmt.Sprintf("Failure rate %.0f%% across %d runs.", job.FailureRate*100, job.RunsAnalyzed),
-					Recommendation: "Investigate instability before adding retries.",
+					Evidence:       fmt.Sprintf("Average duration %s; P95 %s; consumes %.0f%% of measured job runtime.", profile.FormatDuration(job.AvgDuration), profile.FormatDuration(job.P95Duration), job.ContributionPct),
+					Recommendation: longRunningRecommendation(job),
 				})
 			}
 			if job.RunsAnalyzed >= 3 && job.MinDuration > 0 && job.MaxDuration >= 3*job.MinDuration && job.MaxDuration-job.MinDuration >= 5*time.Minute {
@@ -484,18 +521,43 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 		}
 	}
 	sort.SliceStable(findings, func(i, j int) bool {
-		return severityRank(findings[i].Severity) > severityRank(findings[j].Severity)
+		return findingRank(findings[i]) < findingRank(findings[j])
 	})
 	return findings
 }
 
-func severityRank(severity string) int {
-	switch severity {
-	case "high":
-		return 3
-	case "medium":
-		return 2
+func aggregationEvidence(job profile.JobProfile) string {
+	evidence := fmt.Sprintf("Failure rate %.0f%% across %d runs.", job.FailureRate*100, job.RunsAnalyzed)
+	if job.DependsOnCount > 0 {
+		evidence += fmt.Sprintf(" Job depends on %d upstream jobs.", job.DependsOnCount)
+	}
+	return evidence
+}
+
+func longRunningRecommendation(job profile.JobProfile) string {
+	if job.ContributionPct < 10 {
+		return "This job is long-running, but not currently a dominant runtime contributor. Optimize it after higher-contribution jobs unless it blocks the critical path."
+	}
+	return "This job is long-running, but below the high-leverage runtime contribution threshold. Optimize it after higher-contribution jobs unless it blocks the critical path."
+}
+
+func findingRank(finding profile.Finding) int {
+	switch finding.ID {
+	case "repeated-failures":
+		return 10
+	case "flaky-job":
+		return 20
+	case "critical-path-blocker":
+		return 30
+	case "failure-aggregation-job":
+		return 35
+	case "high-leverage-slow-job":
+		return 40
+	case "long-running-job":
+		return 50
+	case "high-variance":
+		return 60
 	default:
-		return 1
+		return 100
 	}
 }

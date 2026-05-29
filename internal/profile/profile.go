@@ -29,6 +29,8 @@ type JobProfile struct {
 	ContributionPct float64
 	MinDuration     time.Duration
 	MaxDuration     time.Duration
+	DependsOnCount  int
+	IsAggregator    bool
 }
 
 type Finding struct {
