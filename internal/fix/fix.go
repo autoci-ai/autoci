@@ -743,6 +743,9 @@ func instrumentationStepInsertAfter(anchorLine, stepIndent, name string, command
 
 func stepIndentForCommandLine(line string) string {
 	indent := leadingWhitespace(line)
+	if strings.HasPrefix(strings.TrimSpace(line), "- ") {
+		return indent
+	}
 	if len(indent) < 2 {
 		return ""
 	}

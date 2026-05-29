@@ -8,6 +8,7 @@ import (
 
 	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	"gopkg.in/yaml.v3"
 )
 
 func TestGenerateDependencyInstallFixTargetsExactYarnJob(t *testing.T) {
@@ -216,6 +217,57 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	}
 	if plan.Diff != again.Diff {
 		t.Fatalf("instrumentation diff is not deterministic:\nfirst:\n%s\nsecond:\n%s", plan.Diff, again.Diff)
+	}
+}
+
+func TestGenerateYarnInstrumentationAfterInlineRunStepPreservesIndentation(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  frontend-unit-test:
+    steps:
+      - run: corepack enable && yarn install --immutable
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Occurrences:  3,
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
+		Gaps: []EvidenceGap{
+			{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish root cause"},
+			{Type: "missing_safe_patch_strategy", Message: "AutoCI cannot select a safe patch"},
+		},
+		LogExcerpts: []string{
+			"snyk@npm:1.1302.1 STDERR - actual: abc123",
+			"snyk@npm:1.1302.1 STDERR - expected: def456",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.PatchGenerated {
+		t.Fatalf("expected instrumentation patch, got reason: %s", plan.Reason)
+	}
+	patched := applyLineDiff(readWorkflow(t, workflow), plan)
+	if !strings.Contains(patched, "      - run: corepack enable && yarn install --immutable\n      - name: AutoCI capture yarn install diagnostics\n        if: failure()") {
+		t.Fatalf("instrumentation step indentation/order is wrong:\n%s", patched)
+	}
+	if strings.Contains(patched, "\n    - name: AutoCI capture yarn install diagnostics") {
+		t.Fatalf("instrumentation step was inserted at job indentation instead of steps indentation:\n%s", patched)
+	}
+	installIndex := strings.Index(patched, "- run: corepack enable && yarn install --immutable")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics")
+	testIndex := strings.Index(patched, "- run: yarn test")
+	if !(installIndex >= 0 && diagnosticsIndex > installIndex && testIndex > diagnosticsIndex) {
+		t.Fatalf("instrumentation not inserted immediately after install step:\n%s", patched)
+	}
+	var parsed any
+	if err := yaml.Unmarshal([]byte(patched), &parsed); err != nil {
+		t.Fatalf("patched workflow does not parse as YAML: %v\n%s", err, patched)
 	}
 }
 
