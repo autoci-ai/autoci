@@ -230,6 +230,69 @@ func TestWriteFixRemovesLegacyFixIDArtifact(t *testing.T) {
 	}
 }
 
+func TestWriteFixPreservesAppliedRecordOnIdempotentNoOp(t *testing.T) {
+	dir := t.TempDir()
+	applied := map[string]any{
+		"id":             "fix-image-pull-failure",
+		"sourceItemId":   "failure-theme-image-pull-failure",
+		"workflow":       "pr.yml",
+		"fixType":        "instrumentation",
+		"patchGenerated": true,
+		"patchApplied":   true,
+		"reason":         "Readiness is needs_more_evidence; generated instrumentation from gaps: missing_image.",
+	}
+	if err := WriteFix(dir, applied); err != nil {
+		t.Fatal(err)
+	}
+	noop := map[string]any{
+		"id":             "fix-image-pull-failure",
+		"sourceItemId":   "failure-theme-image-pull-failure",
+		"workflow":       "pr.yml",
+		"fixType":        "instrumentation",
+		"patchGenerated": false,
+		"patchApplied":   false,
+		"reason":         "The selected workflow already contains the AutoCI container diagnostics step.",
+	}
+	if err := WriteFix(dir, noop); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadFix(dir, "failure-theme-image-pull-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored struct {
+		ID             string `json:"id"`
+		FixType        string `json:"fixType"`
+		PatchGenerated bool   `json:"patchGenerated"`
+		PatchApplied   bool   `json:"patchApplied"`
+		Reason         string `json:"reason"`
+		LastRun        struct {
+			PatchGenerated bool   `json:"patchGenerated"`
+			PatchApplied   bool   `json:"patchApplied"`
+			Reason         string `json:"reason"`
+			Idempotent     bool   `json:"idempotent"`
+		} `json:"lastRun"`
+	}
+	if !snapshotData(snapshot.Data, &stored) {
+		t.Fatalf("could not decode fix snapshot: %#v", snapshot)
+	}
+	if stored.ID != "fix-image-pull-failure" || stored.FixType != "instrumentation" {
+		t.Fatalf("stored identity changed: %#v", stored)
+	}
+	if !stored.PatchGenerated || !stored.PatchApplied {
+		t.Fatalf("applied state was overwritten: %#v", stored)
+	}
+	if stored.Reason != applied["reason"] {
+		t.Fatalf("top-level reason was overwritten: %#v", stored)
+	}
+	if stored.LastRun.PatchGenerated || stored.LastRun.PatchApplied || !stored.LastRun.Idempotent {
+		t.Fatalf("lastRun status = %#v", stored.LastRun)
+	}
+	if stored.LastRun.Reason != noop["reason"] {
+		t.Fatalf("lastRun reason = %q", stored.LastRun.Reason)
+	}
+}
+
 func snapshotData(value any, target any) bool {
 	data, err := json.Marshal(value)
 	if err != nil {

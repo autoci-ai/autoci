@@ -122,6 +122,12 @@ func WriteFix(repoPath string, data any) error {
 	if key == "" {
 		key = id
 	}
+	dir := filepath.Join(repoPath, ".autoci", "fixes")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, slug(key)+".json")
+	data = mergeExistingAppliedFix(path, data)
 	payload, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -136,11 +142,6 @@ func WriteFix(repoPath string, data any) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Join(repoPath, ".autoci", "fixes")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, slug(key)+".json")
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
 		return err
 	}
@@ -157,6 +158,36 @@ func ReadFix(repoPath, sourceID string) (Snapshot, error) {
 		return snapshot, nil
 	}
 	return readSnapshotFile(filepath.Join(dir, slug(legacyFixID(sourceID))+".json"))
+}
+
+func mergeExistingAppliedFix(path string, next any) any {
+	existing, err := readSnapshotFile(path)
+	if err != nil {
+		return next
+	}
+	var existingData map[string]any
+	if !decodeData(existing.Data, &existingData) || !boolValue(existingData["patchApplied"]) {
+		return next
+	}
+	var nextData map[string]any
+	if !decodeData(next, &nextData) {
+		return next
+	}
+	if boolValue(nextData["patchApplied"]) || boolValue(nextData["patchGenerated"]) {
+		return next
+	}
+	existingData["lastRun"] = map[string]any{
+		"patchGenerated": boolValue(nextData["patchGenerated"]),
+		"patchApplied":   boolValue(nextData["patchApplied"]),
+		"reason":         stringValue(nextData["reason"]),
+		"idempotent":     isIdempotentFixRun(nextData),
+	}
+	return existingData
+}
+
+func isIdempotentFixRun(data map[string]any) bool {
+	reason := strings.ToLower(stringValue(data["reason"]))
+	return strings.Contains(reason, "already contains") || strings.Contains(reason, "already applied")
 }
 
 func FindItem(repoPath, workflow, id string) (StoredItem, bool) {
@@ -343,30 +374,30 @@ func normalizeItemID(id string) string {
 }
 
 func extractID(data any) string {
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return ""
-	}
 	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
+	if !decodeData(data, &object) {
 		return ""
 	}
 	return stringValue(object["id"])
 }
 
 func extractSourceID(data any) string {
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return ""
-	}
 	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
+	if !decodeData(data, &object) {
 		return ""
 	}
 	if sourceID := stringValue(object["sourceId"]); sourceID != "" {
 		return sourceID
 	}
 	return stringValue(object["sourceItemId"])
+}
+
+func decodeData(data any, target any) bool {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(encoded, target) == nil
 }
 
 func legacyFixID(sourceID string) string {
@@ -390,6 +421,11 @@ func stringValue(value any) string {
 		return str
 	}
 	return ""
+}
+
+func boolValue(value any) bool {
+	typed, ok := value.(bool)
+	return ok && typed
 }
 
 func stringSlice(value any) []string {
