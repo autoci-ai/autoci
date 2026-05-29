@@ -293,6 +293,7 @@ func unifiedDiff(path string, original, updated []byte) string {
 func normalizeOpportunity(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "research-")
+	value = strings.TrimPrefix(value, "reliability-")
 	if strings.HasPrefix(value, "image-pull") {
 		return "failure-theme-image-pull-failure"
 	}

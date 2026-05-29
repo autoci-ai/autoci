@@ -31,14 +31,14 @@ func TestFromProfilePrioritizesAndHidesBacklog(t *testing.T) {
 	if plan.HiddenCount != 1 {
 		t.Fatalf("expected one hidden opportunity after suppressing low-leverage runtime, got %d", plan.HiddenCount)
 	}
-	if plan.Opportunities[0].ID != "job-instability" {
+	if plan.Opportunities[0].ID != "reliability-recurring-job-instability" {
 		t.Fatalf("expected grouped flakiness first, got %s", plan.Opportunities[0].ID)
 	}
 	if !strings.Contains(plan.Opportunities[0].Evidence, "frontend-unit-test") || !strings.Contains(plan.Opportunities[0].Evidence, "go-lint") {
 		t.Fatalf("expected grouped flaky evidence, got %q", plan.Opportunities[0].Evidence)
 	}
 	for _, opportunity := range plan.Opportunities {
-		if opportunity.ID == "runtime-characterization-tiny-runtime" {
+		if opportunity.ID == "performance-tiny-runtime-critical-path" {
 			t.Fatal("low-leverage runtime characterization should be suppressed")
 		}
 		if len(opportunity.SuggestedCommands) == 0 {
@@ -70,8 +70,11 @@ func TestFromProfileAndFailuresPrioritizesFailureThemes(t *testing.T) {
 	if len(plan.Opportunities) == 0 {
 		t.Fatal("expected opportunities")
 	}
-	if plan.Opportunities[0].ID != "image-pull-failure" {
+	if plan.Opportunities[0].ID != "reliability-image-pull-failure" {
 		t.Fatalf("expected image pull theme first, got %s", plan.Opportunities[0].ID)
+	}
+	if plan.Opportunities[0].Category != "Reliability" {
+		t.Fatalf("expected reliability category, got %s", plan.Opportunities[0].Category)
 	}
 	if !strings.Contains(plan.Opportunities[0].Evidence, "6 occurrences across 2 jobs") {
 		t.Fatalf("unexpected evidence: %s", plan.Opportunities[0].Evidence)

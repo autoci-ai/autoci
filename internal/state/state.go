@@ -99,6 +99,22 @@ func Read(repoPath, command, workflow string) (Snapshot, error) {
 	return snapshot, nil
 }
 
+func ReadData[T any](repoPath, command, workflow string) (*T, error) {
+	snapshot, err := Read(repoPath, command, workflow)
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(snapshot.Data)
+	if err != nil {
+		return nil, err
+	}
+	var result T
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func WorkflowFile(workflow string) string {
 	return slug(strings.TrimSuffix(filepath.Base(workflow), filepath.Ext(workflow))) + ".json"
 }

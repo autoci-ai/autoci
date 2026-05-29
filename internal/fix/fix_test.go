@@ -31,4 +31,7 @@ func TestNormalizeResearchOpportunityID(t *testing.T) {
 	if got := normalizeOpportunity("research-image-pull-failure"); got != "failure-theme-image-pull-failure" {
 		t.Fatalf("normalized id = %q", got)
 	}
+	if got := normalizeOpportunity("reliability-image-pull-failure"); got != "failure-theme-image-pull-failure" {
+		t.Fatalf("normalized id = %q", got)
+	}
 }

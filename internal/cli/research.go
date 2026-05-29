@@ -3,9 +3,12 @@ package cli
 import (
 	"fmt"
 
+	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/research"
+	"github.com/autoci-ai/autoci/internal/rules"
 	"github.com/autoci-ai/autoci/internal/scanner"
 	"github.com/autoci-ai/autoci/internal/state"
 	"github.com/spf13/cobra"
@@ -40,12 +43,24 @@ func newResearchCommand() *cobra.Command {
 				Limit:          limit,
 				LocalWorkflows: []scanner.Workflow{workflow},
 			}
-			runtimeProfile, err := depot.Profile(cmd.Context())
+			runtimeProfile, err := state.ReadData[profile.Profile](cfg.Path, "profile", workflowName)
 			if err != nil {
-				return fmt.Errorf("profile CI history: %w", err)
+				runtimeProfile, err = depot.Profile(cmd.Context())
+				if err != nil {
+					return fmt.Errorf("profile CI history: %w", err)
+				}
+				_ = state.Write(cfg.Path, "profile", workflowName, runtimeProfile)
 			}
-			failureAnalysis, _ := depot.Failures(cmd.Context(), workflowName)
-			plan := research.FromProfileAndFailures(workflowName, runtimeProfile, failureAnalysis, cfg.Verbose)
+			failureAnalysis, err := state.ReadData[failures.Analysis](cfg.Path, "failures", workflowName)
+			if err != nil {
+				failureAnalysis, _ = depot.Failures(cmd.Context(), workflowName)
+				if failureAnalysis != nil {
+					_ = state.Write(cfg.Path, "failures", workflowName, failureAnalysis)
+				}
+			}
+			staticAnalysis := rules.AnalyzeWorkflow(workflowName, workflow)
+			_ = state.Write(cfg.Path, "analyze", workflowName, staticAnalysis)
+			plan := research.FromSources(workflowName, runtimeProfile, failureAnalysis, staticAnalysis.Findings, cfg.Verbose)
 			_ = state.Write(cfg.Path, "research", workflowName, plan)
 			if format == "json" {
 				return report.WriteResearchJSON(cmd.OutOrStdout(), plan)

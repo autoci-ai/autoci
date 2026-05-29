@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/autoci-ai/autoci/internal/research"
 )
@@ -23,25 +24,87 @@ func WriteResearchTerminal(w io.Writer, plan research.Plan) {
 	if len(plan.Opportunities) == 0 {
 		return
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Research opportunities:")
-	for _, opportunity := range plan.Opportunities {
-		fmt.Fprintf(w, "\n%s\n", opportunity.Title)
-		fmt.Fprintf(w, "ID: %s\n", opportunity.ID)
-		fmt.Fprintf(w, "Hypothesis: %s\n", opportunity.Hypothesis)
-		fmt.Fprintf(w, "Evidence: %s\n", opportunity.Evidence)
-		fmt.Fprintf(w, "Experiment: %s\n", opportunity.Experiment)
-		fmt.Fprintf(w, "Success criteria: %s\n", opportunity.SuccessCriteria)
-		fmt.Fprintf(w, "Risk: %s\n", opportunity.Risk)
-		fmt.Fprintf(w, "Estimated impact: %s\n", opportunity.EstimatedImpact)
-		fmt.Fprintln(w, "Suggested commands:")
-		for _, command := range opportunity.SuggestedCommands {
-			fmt.Fprintf(w, "- %s\n", command)
-		}
-	}
+	writeResearchOpportunityGroups(w, plan.Opportunities)
 	if plan.HiddenCount > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "%d additional research opportunities hidden. Use --verbose to show the complete backlog.\n", plan.HiddenCount)
+	}
+}
+
+func writeResearchOpportunityGroups(w io.Writer, opportunities []research.ResearchOpportunity) {
+	groups := groupResearchOpportunities(opportunities)
+	for _, category := range orderedCategories(groups) {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "%s opportunities:\n", category)
+		for _, opportunity := range groups[category] {
+			fmt.Fprintf(w, "\n%s\n", opportunity.Title)
+			fmt.Fprintf(w, "ID: %s\n", opportunity.ID)
+			fmt.Fprintf(w, "Hypothesis: %s\n", opportunity.Hypothesis)
+			fmt.Fprintf(w, "Evidence: %s\n", opportunity.Evidence)
+			fmt.Fprintf(w, "Experiment: %s\n", opportunity.Experiment)
+			fmt.Fprintf(w, "Success criteria: %s\n", opportunity.SuccessCriteria)
+			fmt.Fprintf(w, "Risk: %s\n", opportunity.Risk)
+			fmt.Fprintf(w, "Estimated impact: %s\n", opportunity.EstimatedImpact)
+			fmt.Fprintln(w, "Suggested commands:")
+			for _, command := range opportunity.SuggestedCommands {
+				fmt.Fprintf(w, "- %s\n", command)
+			}
+		}
+	}
+}
+
+func groupResearchOpportunities(opportunities []research.ResearchOpportunity) map[string][]research.ResearchOpportunity {
+	groups := map[string][]research.ResearchOpportunity{}
+	for _, opportunity := range opportunities {
+		category := opportunity.Category
+		if category == "" {
+			category = "Workflow"
+		}
+		groups[category] = append(groups[category], opportunity)
+	}
+	return groups
+}
+
+func orderedCategories(groups map[string][]research.ResearchOpportunity) []string {
+	preferred := []string{"Reliability", "Performance", "Cost", "Workflow"}
+	var result []string
+	seen := map[string]bool{}
+	for _, category := range preferred {
+		if len(groups[category]) > 0 {
+			result = append(result, category)
+			seen[category] = true
+		}
+	}
+	var rest []string
+	for category := range groups {
+		if !seen[category] {
+			rest = append(rest, category)
+		}
+	}
+	sort.Strings(rest)
+	return append(result, rest...)
+}
+
+func writeResearchMarkdownGroups(w io.Writer, opportunities []research.ResearchOpportunity) {
+	groups := groupResearchOpportunities(opportunities)
+	for _, category := range orderedCategories(groups) {
+		fmt.Fprintf(w, "## %s Opportunities\n\n", category)
+		for _, opportunity := range groups[category] {
+			fmt.Fprintf(w, "### %s\n\n", opportunity.Title)
+			fmt.Fprintf(w, "- ID: `%s`\n", opportunity.ID)
+			fmt.Fprintf(w, "- Category: `%s`\n", opportunity.Category)
+			fmt.Fprintf(w, "- Hypothesis: %s\n", opportunity.Hypothesis)
+			fmt.Fprintf(w, "- Evidence: %s\n", opportunity.Evidence)
+			fmt.Fprintf(w, "- Experiment: %s\n", opportunity.Experiment)
+			fmt.Fprintf(w, "- Success criteria: %s\n", opportunity.SuccessCriteria)
+			fmt.Fprintf(w, "- Risk: %s\n", opportunity.Risk)
+			fmt.Fprintf(w, "- Estimated impact: %s\n", opportunity.EstimatedImpact)
+			fmt.Fprintln(w, "- Suggested commands:")
+			for _, command := range opportunity.SuggestedCommands {
+				fmt.Fprintf(w, "  - `%s`\n", command)
+			}
+			fmt.Fprintln(w)
+		}
 	}
 }
 
@@ -71,27 +134,13 @@ func WriteResearchMarkdown(w io.Writer, plan research.Plan) error {
 	fmt.Fprintf(w, "- Reason: %s\n", plan.TopRecommendation.Reason)
 	fmt.Fprintf(w, "- Expected value: %s\n", plan.TopRecommendation.ExpectedValue)
 	fmt.Fprintf(w, "- Why now: %s\n\n", plan.TopRecommendation.WhyNow)
-	fmt.Fprintln(w, "## Research Opportunities")
-	fmt.Fprintln(w)
 	if len(plan.Opportunities) == 0 {
+		fmt.Fprintln(w, "## Research Opportunities")
+		fmt.Fprintln(w)
 		fmt.Fprintln(w, "No high-value research opportunities were identified from the sampled history.")
 		return nil
 	}
-	for _, opportunity := range plan.Opportunities {
-		fmt.Fprintf(w, "### %s\n\n", opportunity.Title)
-		fmt.Fprintf(w, "- ID: `%s`\n", opportunity.ID)
-		fmt.Fprintf(w, "- Hypothesis: %s\n", opportunity.Hypothesis)
-		fmt.Fprintf(w, "- Evidence: %s\n", opportunity.Evidence)
-		fmt.Fprintf(w, "- Experiment: %s\n", opportunity.Experiment)
-		fmt.Fprintf(w, "- Success criteria: %s\n", opportunity.SuccessCriteria)
-		fmt.Fprintf(w, "- Risk: %s\n", opportunity.Risk)
-		fmt.Fprintf(w, "- Estimated impact: %s\n", opportunity.EstimatedImpact)
-		fmt.Fprintln(w, "- Suggested commands:")
-		for _, command := range opportunity.SuggestedCommands {
-			fmt.Fprintf(w, "  - `%s`\n", command)
-		}
-		fmt.Fprintln(w)
-	}
+	writeResearchMarkdownGroups(w, plan.Opportunities)
 	if plan.HiddenCount > 0 {
 		fmt.Fprintf(w, "_%d additional research opportunities hidden. Use `--verbose` to show the complete backlog._\n", plan.HiddenCount)
 	}

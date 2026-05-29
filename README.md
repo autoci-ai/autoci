@@ -144,7 +144,7 @@ Workflow selection is explicit. AutoCI discovers workflows from `.depot/workflow
 
 ## Research Planning
 
-`autoci research` converts profile findings into structured optimization hypotheses and proposed experiments. It does not execute changes or run experiments.
+`autoci research` is the primary optimization entry point. It loads cached profile and failure state when available, regenerates missing analysis, includes static workflow findings, and converts the combined evidence into a prioritized backlog. It does not execute changes or run experiments.
 
 Research is intended to bridge observation into planning:
 
@@ -152,7 +152,7 @@ Research is intended to bridge observation into planning:
 observe -> research -> experiment -> validate -> measure -> remember
 ```
 
-Current research output includes a top recommendation and the top three highest-value opportunities by default. Additional opportunities are hidden unless `--verbose` is used. Each opportunity includes a stable ID, hypothesis, evidence, experiment, success criteria, risk, estimated impact, and suggested commands.
+Current research output includes a top recommendation and the top three highest-value opportunities by default. Additional opportunities are hidden unless `--verbose` is used. Each opportunity includes a stable category-aware ID, category, hypothesis, evidence, experiment, success criteria, risk, estimated impact, and suggested commands. Categories include reliability, performance, cost, and workflow structure.
 
 ## Local State
 

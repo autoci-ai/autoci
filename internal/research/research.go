@@ -9,6 +9,7 @@ import (
 
 	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
+	"github.com/autoci-ai/autoci/internal/rules"
 )
 
 const defaultOpportunityLimit = 3
@@ -30,6 +31,7 @@ type TopRecommendation struct {
 
 type ResearchOpportunity struct {
 	ID                string   `json:"id"`
+	Category          string   `json:"category"`
 	Title             string   `json:"title"`
 	Hypothesis        string   `json:"hypothesis"`
 	Evidence          string   `json:"evidence"`
@@ -51,6 +53,10 @@ func FromProfile(workflowName string, runtimeProfile *profile.Profile) Plan {
 
 func FromProfileWithOptions(workflowName string, runtimeProfile *profile.Profile, verbose bool) Plan {
 	plan := Plan{Workflow: workflowName, Opportunities: []ResearchOpportunity{}}
+	if runtimeProfile == nil {
+		plan.TopRecommendation = topRecommendation(plan.Opportunities)
+		return plan
+	}
 	if len(runtimeProfile.Workflows) > 0 {
 		plan.RunsAnalyzed = runtimeProfile.Workflows[0].RunsAnalyzed
 	}
@@ -75,14 +81,24 @@ func FromProfileWithOptions(workflowName string, runtimeProfile *profile.Profile
 }
 
 func FromProfileAndFailures(workflowName string, runtimeProfile *profile.Profile, failureAnalysis *failures.Analysis, verbose bool) Plan {
+	return FromSources(workflowName, runtimeProfile, failureAnalysis, nil, verbose)
+}
+
+func FromSources(workflowName string, runtimeProfile *profile.Profile, failureAnalysis *failures.Analysis, staticFindings []rules.Finding, verbose bool) Plan {
 	plan := FromProfileWithOptions(workflowName, runtimeProfile, true)
 	if failureAnalysis != nil {
 		for _, theme := range failureAnalysis.FailureThemes {
 			plan.Opportunities = append(plan.Opportunities, opportunityFromFailureTheme(workflowName, theme))
 		}
 	}
-	scored := make([]scoredOpportunity, 0, len(plan.Opportunities))
-	for _, opportunity := range plan.Opportunities {
+	for _, finding := range staticFindings {
+		if opportunity, ok := opportunityFromStaticFinding(workflowName, finding); ok {
+			plan.Opportunities = append(plan.Opportunities, opportunity)
+		}
+	}
+	opportunities := uniqueOpportunities(plan.Opportunities)
+	scored := make([]scoredOpportunity, 0, len(opportunities))
+	for _, opportunity := range opportunities {
 		scored = append(scored, scoredOpportunity{opportunity: opportunity, score: opportunityScore(opportunity)})
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
@@ -100,6 +116,19 @@ func FromProfileAndFailures(workflowName string, runtimeProfile *profile.Profile
 		result.HiddenCount = len(scored) - limit
 	}
 	result.TopRecommendation = topRecommendation(result.Opportunities)
+	return result
+}
+
+func uniqueOpportunities(opportunities []ResearchOpportunity) []ResearchOpportunity {
+	seen := map[string]bool{}
+	var result []ResearchOpportunity
+	for _, opportunity := range opportunities {
+		if opportunity.ID == "" || seen[opportunity.ID] {
+			continue
+		}
+		seen[opportunity.ID] = true
+		result = append(result, opportunity)
+	}
 	return result
 }
 
@@ -140,7 +169,8 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 	switch findingKind(finding.ID) {
 	case "repeated-failures":
 		return ResearchOpportunity{
-			ID:                "workflow-reliability",
+			ID:                "reliability-workflow-failures",
+			Category:          "Reliability",
 			Title:             "Investigate workflow reliability",
 			Hypothesis:        "Workflow failures are concentrated in one or more recurring failure modes.",
 			Evidence:          finding.Evidence,
@@ -152,7 +182,8 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 		}, 100
 	case "failure-aggregation-job":
 		return ResearchOpportunity{
-			ID:                "failure-aggregation",
+			ID:                "reliability-failure-aggregation",
+			Category:          "Reliability",
 			Title:             fmt.Sprintf("Trace upstream failures behind %s", target),
 			Hypothesis:        "This job reports upstream failures rather than failing independently.",
 			Evidence:          finding.Evidence,
@@ -164,7 +195,8 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 		}, 74
 	case "high-leverage-slow-job":
 		return ResearchOpportunity{
-			ID:                "high-leverage-runtime-" + slug(target),
+			ID:                "performance-" + slug(target) + "-runtime",
+			Category:          "Performance",
 			Title:             fmt.Sprintf("Reduce runtime for %s", target),
 			Hypothesis:        "This job dominates measured runtime because of expensive setup, serial work, or unsharded tests.",
 			Evidence:          finding.Evidence,
@@ -176,7 +208,8 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 		}, 70 + runtimeContribution(finding.Evidence)
 	case "long-running-job":
 		return ResearchOpportunity{
-			ID:                "runtime-characterization-" + slug(target),
+			ID:                "performance-" + slug(target) + "-critical-path",
+			Category:          "Performance",
 			Title:             fmt.Sprintf("Characterize %s runtime", target),
 			Hypothesis:        "This job is long-running, but may not be the highest-leverage optimization target unless it blocks the critical path.",
 			Evidence:          finding.Evidence,
@@ -188,7 +221,8 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 		}, 35 + runtimeContribution(finding.Evidence)
 	case "high-variance":
 		return ResearchOpportunity{
-			ID:                "runtime-variance-" + slug(target),
+			ID:                "performance-runtime-variance-" + slug(target),
+			Category:          "Performance",
 			Title:             fmt.Sprintf("Investigate runtime variance in %s", target),
 			Hypothesis:        "Runtime variance is caused by cache misses, external dependencies, queueing, or uneven test distribution.",
 			Evidence:          finding.Evidence,
@@ -201,6 +235,7 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 	default:
 		return ResearchOpportunity{
 			ID:                "ci-investigation-" + slug(finding.ID+"-"+target),
+			Category:          "Workflow",
 			Title:             finding.Title,
 			Hypothesis:        "The observed finding points to a measurable CI improvement opportunity.",
 			Evidence:          finding.Evidence,
@@ -225,7 +260,8 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 		score += minInt(8, failureRate(finding.Evidence))
 	}
 	return ResearchOpportunity{
-		ID:                "job-instability",
+		ID:                "reliability-recurring-job-instability",
+		Category:          "Reliability",
 		Title:             "Investigate recurring job instability",
 		Hypothesis:        "Multiple job failures may share recurring causes such as nondeterministic tests, timing, environment setup, or external dependencies.",
 		Evidence:          strings.Join(evidence, "\n"),
@@ -239,8 +275,9 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 
 func opportunityFromFailureTheme(workflowName string, theme failures.FailureTheme) ResearchOpportunity {
 	return ResearchOpportunity{
-		ID:                strings.TrimPrefix(theme.ID, "failure-theme-"),
-		Title:             "Investigate " + theme.Signature + " failures",
+		ID:                "reliability-" + strings.TrimPrefix(theme.ID, "failure-theme-"),
+		Category:          "Reliability",
+		Title:             "Investigate " + failureThemeTitle(theme.Signature),
 		Hypothesis:        "A recurring infrastructure or dependency failure theme is causing multiple job failures.",
 		Evidence:          failureThemeEvidence(theme),
 		Experiment:        experimentForFailureTheme(theme),
@@ -248,6 +285,60 @@ func opportunityFromFailureTheme(workflowName string, theme failures.FailureThem
 		Risk:              "Low",
 		EstimatedImpact:   "Reduces repeated CI failures caused by the same root cause.",
 		SuggestedCommands: suggestedCommands(workflowName),
+	}
+}
+
+func failureThemeTitle(signature string) string {
+	if strings.HasSuffix(signature, " failure") {
+		return strings.TrimSuffix(signature, " failure") + " failures"
+	}
+	return signature + " failures"
+}
+
+func opportunityFromStaticFinding(workflowName string, finding rules.Finding) (ResearchOpportunity, bool) {
+	commands := suggestedCommands(workflowName)
+	switch finding.ID {
+	case "missing-cache", "docker-cache":
+		return ResearchOpportunity{
+			ID:                "performance-cache-strategy",
+			Category:          "Performance",
+			Title:             "Improve workflow caching strategy",
+			Hypothesis:        "Missing or ineffective caching is increasing workflow duration and variance.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Add or improve cache configuration, then compare profile results.",
+			SuccessCriteria:   "Average duration or runtime variance drops without increasing failure rate.",
+			Risk:              "Medium",
+			EstimatedImpact:   "Shorter and more predictable workflow runtime.",
+			SuggestedCommands: commands,
+		}, true
+	case "missing-concurrency":
+		return ResearchOpportunity{
+			ID:                "workflow-concurrency-cancellation",
+			Category:          "Workflow",
+			Title:             "Add workflow concurrency or cancellation",
+			Hypothesis:        "Superseded runs may waste CI capacity and delay useful feedback.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Add cancellation or concurrency controls and compare queued/running workflow overlap.",
+			SuccessCriteria:   "Superseded runs are cancelled without hiding valid failures.",
+			Risk:              "Medium",
+			EstimatedImpact:   "Reduced wasted CI work and clearer developer feedback.",
+			SuggestedCommands: commands,
+		}, true
+	case "duplicate-install":
+		return ResearchOpportunity{
+			ID:                "performance-duplicate-dependency-install",
+			Category:          "Performance",
+			Title:             "Remove duplicate dependency installation",
+			Hypothesis:        "Repeated dependency installation is adding avoidable runtime.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Install dependencies once per job or cache the dependency directory, then compare job duration.",
+			SuccessCriteria:   "The affected job duration decreases without changing test coverage.",
+			Risk:              "Low",
+			EstimatedImpact:   "Reduced repeated setup time.",
+			SuggestedCommands: commands,
+		}, true
+	default:
+		return ResearchOpportunity{}, false
 	}
 }
 
@@ -274,16 +365,20 @@ func experimentForFailureTheme(theme failures.FailureTheme) string {
 
 func opportunityScore(opportunity ResearchOpportunity) int {
 	switch {
-	case strings.HasPrefix(opportunity.ID, "image-pull"):
+	case strings.HasPrefix(opportunity.ID, "reliability-image-pull"):
 		return 130
-	case strings.HasPrefix(opportunity.ID, "npm-install"):
+	case strings.HasPrefix(opportunity.ID, "reliability-npm-install"):
 		return 120
-	case opportunity.ID == "job-instability":
+	case opportunity.ID == "reliability-recurring-job-instability":
 		return 110
-	case opportunity.ID == "workflow-reliability":
+	case opportunity.ID == "reliability-workflow-failures":
 		return 100
-	case strings.HasPrefix(opportunity.ID, "high-leverage-runtime"):
-		return 80
+	case strings.HasPrefix(opportunity.ID, "performance-runtime-variance"):
+		return 75 + runtimeContribution(opportunity.Evidence)
+	case strings.HasPrefix(opportunity.ID, "performance-"):
+		return 80 + runtimeContribution(opportunity.Evidence)
+	case strings.HasPrefix(opportunity.ID, "workflow-"):
+		return 60
 	default:
 		return 50
 	}
@@ -309,14 +404,14 @@ func topRecommendation(opportunities []ResearchOpportunity) TopRecommendation {
 
 func whyNow(opportunity ResearchOpportunity) string {
 	switch {
-	case opportunity.ID == "workflow-reliability":
+	case opportunity.ID == "reliability-workflow-failures":
 		return "Workflow-level failures affect every developer waiting on this CI path."
-	case opportunity.ID == "job-instability":
+	case opportunity.ID == "reliability-recurring-job-instability":
 		return "Multiple flaky jobs are contributing to workflow failures."
-	case strings.HasPrefix(opportunity.ID, "high-leverage-runtime"):
-		return "The job consumes a large share of measured runtime, so improvements should be visible in workflow duration."
-	case strings.HasPrefix(opportunity.ID, "runtime-variance"):
+	case strings.HasPrefix(opportunity.ID, "performance-runtime-variance"):
 		return "High variance makes CI duration unpredictable and can hide cache or dependency problems."
+	case strings.HasPrefix(opportunity.ID, "performance-"):
+		return "The job consumes a large share of measured runtime, so improvements should be visible in workflow duration."
 	default:
 		return "This is the highest-scoring opportunity in the current evidence set."
 	}
