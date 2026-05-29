@@ -55,6 +55,7 @@ func newRootCommand() *cobra.Command {
 	viper.AutomaticEnv()
 
 	root.AddCommand(newAnalyzeCommand())
+	root.AddCommand(newProfileCommand())
 	root.AddCommand(newValidateCommand())
 
 	root.SetOut(os.Stdout)

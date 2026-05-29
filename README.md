@@ -28,6 +28,18 @@ Write a Markdown report:
 autoci analyze --report autoci-report.md
 ```
 
+Generate a runtime profile from recent Depot CI workflow history:
+
+```bash
+autoci profile
+```
+
+Write a Markdown runtime profile:
+
+```bash
+autoci profile --report profile.md
+```
+
 Validate with Depot:
 
 ```bash
@@ -48,7 +60,7 @@ make clean
 
 ## Current Rules
 
-The initial analyzer uses simple deterministic heuristics for:
+The static analyzer uses simple deterministic heuristics for:
 
 - missing explicit timeouts
 - likely unpinned external actions or dependencies
@@ -60,3 +72,22 @@ The initial analyzer uses simple deterministic heuristics for:
 - workflows that look serial but may be parallelized
 
 The analyzer never runs Depot. Only `autoci validate --allow-depot-run` can execute `depot ci run`.
+
+## Runtime Profiling
+
+`autoci profile` uses Depot workflow execution history to prioritize optimization opportunities with measured evidence. It calls the Depot CLI with JSON output, summarizes recent workflows and jobs, and reports slow jobs, flaky jobs, runtime concentration, repeated failures, and high runtime variance when the sampled history supports those conclusions.
+
+The profile command does not run workflows. It reads history with:
+
+```bash
+depot ci workflow list --output json
+depot ci workflow show <workflow-id> --output json
+```
+
+Useful options:
+
+```bash
+autoci profile --limit 100
+autoci profile --repo owner/name
+autoci profile --report profile.md
+```
