@@ -146,6 +146,7 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	workflow := writeWorkflow(t, `jobs:
   integration-test:
     steps:
+      - uses: actions/checkout@v4
       - run: go test ./...
   unrelated-job:
     steps:
@@ -186,10 +187,20 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	if got := strings.Join(plan.Targets[0].DerivedFrom, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
 		t.Fatalf("derivedFrom = %#v", plan.Targets[0].DerivedFrom)
 	}
-	for _, want := range []string{"AutoCI capture container diagnostics", "docker version || true", "docker images || true", "docker events --since 30m --until 0s || true"} {
+	for _, want := range []string{"AutoCI capture container diagnostics", "if: failure()", "docker version || true", "docker images || true", "docker events --since 30m || true"} {
 		if !strings.Contains(plan.Diff, want) {
 			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
 		}
+	}
+	patched := applyLineDiff(readWorkflow(t, workflow), plan)
+	checkoutIndex := strings.Index(patched, "- uses: actions/checkout@v4")
+	testIndex := strings.Index(patched, "- run: go test ./...")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture container diagnostics")
+	if checkoutIndex < 0 || testIndex < 0 || diagnosticsIndex < 0 {
+		t.Fatalf("patched workflow missing expected steps:\n%s", patched)
+	}
+	if !(checkoutIndex < testIndex && testIndex < diagnosticsIndex) {
+		t.Fatalf("instrumentation was not appended after existing steps:\n%s", patched)
 	}
 	if strings.Contains(plan.Diff, "unrelated-job") {
 		t.Fatalf("diff touched unrelated job:\n%s", plan.Diff)
@@ -241,4 +252,13 @@ func writeWorkflow(t *testing.T, content string) scanner.Workflow {
 		t.Fatal(err)
 	}
 	return scanner.Workflow{Path: path}
+}
+
+func readWorkflow(t *testing.T, workflow scanner.Workflow) string {
+	t.Helper()
+	data, err := os.ReadFile(workflow.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }

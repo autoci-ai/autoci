@@ -138,6 +138,7 @@ type jobStepsTarget struct {
 	Job         string
 	Line        int
 	LineText    string
+	StepIndent  string
 	DerivedFrom []string
 }
 
@@ -488,7 +489,7 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 	var targets []Target
 	var jobs []string
 	for _, section := range sections {
-		replacement := instrumentationStepsReplacement(section.LineText, imagePullInstrumentationCommands(options.Gaps))
+		replacement := instrumentationStepsAppend(section.LineText, section.StepIndent, imagePullInstrumentationCommands(options.Gaps))
 		if replacement == "" {
 			continue
 		}
@@ -543,7 +544,7 @@ func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
 			commands = append(commands, "docker images || true")
 		case "missing_registry", "missing_pull_error":
 			commands = append(commands, "docker ps -a || true")
-			commands = append(commands, "docker events --since 30m --until 0s || true")
+			commands = append(commands, "docker events --since 30m || true")
 		}
 	}
 	commands = append(commands,
@@ -553,21 +554,41 @@ func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
 	return uniqueStringsPreserveOrder(commands)
 }
 
-func instrumentationStepsReplacement(stepsLine string, commands []string) string {
-	if strings.TrimSpace(stepsLine) != "steps:" || len(commands) == 0 {
+func instrumentationStepsAppend(anchorLine, stepIndent string, commands []string) string {
+	if strings.TrimSpace(anchorLine) == "" || stepIndent == "" || len(commands) == 0 {
 		return ""
 	}
-	indent := stepsLine[:strings.Index(stepsLine, "steps:")]
-	stepIndent := indent + "  "
 	bodyIndent := stepIndent + "  "
-	var lines []string
-	lines = append(lines, stepsLine)
+	lines := []string{anchorLine}
+	if strings.TrimSpace(anchorLine) == "steps: []" {
+		lines[0] = strings.Replace(anchorLine, "steps: []", "steps:", 1)
+	}
 	lines = append(lines, stepIndent+"- name: AutoCI capture container diagnostics")
+	lines = append(lines, bodyIndent+"if: failure()")
 	lines = append(lines, bodyIndent+"run: |")
 	for _, command := range commands {
 		lines = append(lines, bodyIndent+"  "+command)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func stepsAppendLine(lines []string, stepsLine int) int {
+	if stepsLine <= 0 || stepsLine > len(lines) {
+		return stepsLine
+	}
+	stepsIndent := indentWidth(lines[stepsLine-1])
+	appendLine := stepsLine
+	for line := stepsLine + 1; line <= len(lines); line++ {
+		text := lines[line-1]
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if indentWidth(text) <= stepsIndent {
+			break
+		}
+		appendLine = line
+	}
+	return appendLine
 }
 
 func gapSummary(gaps []EvidenceGap) string {
@@ -645,11 +666,13 @@ func inspectWorkflow(workflowName string, input []byte) (workflowInspection, err
 		if steps == nil || steps.Kind != yaml.SequenceNode {
 			continue
 		}
+		appendLine := stepsAppendLine(lines, stepsLine)
 		inspection.Steps = append(inspection.Steps, jobStepsTarget{
-			Workflow: workflowName,
-			Job:      job,
-			Line:     stepsLine,
-			LineText: lineAt(lines, stepsLine),
+			Workflow:   workflowName,
+			Job:        job,
+			Line:       appendLine,
+			LineText:   lineAt(lines, appendLine),
+			StepIndent: leadingWhitespace(lineAt(lines, stepsLine)) + "  ",
 		})
 		for _, step := range steps.Content {
 			if step.Kind != yaml.MappingNode {
@@ -789,10 +812,7 @@ func multiLineDiff(path, original string, replacements map[int]string) string {
 		if start < 1 {
 			start = 1
 		}
-		end := line + 1
-		if end > len(lines) {
-			end = len(lines)
-		}
+		end := line
 		fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", start, end-start+1, start, end-start+1)
 		for i := start; i <= end; i++ {
 			if i == line {
@@ -1061,6 +1081,19 @@ func lineAt(lines []string, line int) string {
 		return ""
 	}
 	return lines[line-1]
+}
+
+func leadingWhitespace(value string) string {
+	for i, r := range value {
+		if r != ' ' && r != '\t' {
+			return value[:i]
+		}
+	}
+	return value
+}
+
+func indentWidth(value string) int {
+	return len(leadingWhitespace(value))
 }
 
 func lineDiff(path, original string, line int, oldLine, newLine string) string {

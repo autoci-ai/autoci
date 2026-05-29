@@ -352,10 +352,13 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture container diagnostics" {
 		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
 	}
-	for _, want := range []string{"AutoCI capture container diagnostics", "docker info || true", "docker events --since 30m --until 0s || true"} {
+	for _, want := range []string{"AutoCI capture container diagnostics", "if: failure()", "docker info || true", "docker events --since 30m || true"} {
 		if !strings.Contains(plan.Diff, want) {
 			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
 		}
+	}
+	if strings.Index(plan.Diff, "+      - name: AutoCI capture container diagnostics") < strings.Index(plan.Diff, "       - run: go test ./...") {
+		t.Fatalf("instrumentation was not appended after existing steps:\n%s", plan.Diff)
 	}
 	if strings.Contains(plan.Diff, "unrelated-job") {
 		t.Fatalf("instrumentation touched unrelated job:\n%s", plan.Diff)
@@ -480,6 +483,7 @@ func setupImageNeedsEvidenceFixState(t *testing.T) string {
 	workflow := `jobs:
   integration-test:
     steps:
+      - uses: actions/checkout@v4
       - run: go test ./...
   unrelated-job:
     steps:
