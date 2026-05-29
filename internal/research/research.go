@@ -532,23 +532,64 @@ func hypothesesForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []R
 }
 
 func imagePullHypotheses(raw RawEvidence) []RootCauseHypothesis {
+	jobs := joinOrFallback(raw.Jobs, "the affected jobs")
+	if len(raw.Images) == 0 && len(raw.Registries) == 0 && !hasImageRootCauseEvidence(raw) {
+		return []RootCauseHypothesis{
+			{Summary: fmt.Sprintf("Recurring image/container setup failures are affecting %s. The current evidence does not include the exact failed image or registry, so the next step is to inspect the failed job logs for pull errors, registry host, and image reference.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)},
+			{Summary: "The failure grouping may be correct, but the cached evidence is too thin to distinguish registry access, image tag, authentication, or job setup failures.", Confidence: 35, Evidence: failureEvidenceSnippets(raw)},
+		}
+	}
+	var hypotheses []RootCauseHypothesis
 	images := joinOrFallback(raw.Images, "the referenced images")
 	registries := joinOrFallback(raw.Registries, joinOrFallback(raw.Hosts, "the registry"))
-	return []RootCauseHypothesis{
-		{Summary: fmt.Sprintf("%s pulls are failing because %s is unavailable, rate-limited, or intermittently unreachable from CI.", images, registries), Confidence: confidenceWithEvidence(80, raw.Registries), Evidence: failureEvidenceSnippets(raw)},
-		{Summary: fmt.Sprintf("Mutable or missing tags on %s are producing manifest lookup failures.", images), Confidence: confidenceWithEvidence(70, raw.Images), Evidence: matchingEvidence(raw, []string{"manifest", "not found", "unknown"})},
-		{Summary: fmt.Sprintf("The workflow depends on public registry pulls for %s instead of an internal mirror or pinned digest.", images), Confidence: confidenceWithEvidence(60, raw.Images), Evidence: append(raw.Images, raw.Registries...)},
+	if hasAnyEvidenceToken(raw, []string{"toomanyrequests", "rate limit"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Pulls for %s may be rate-limited by %s.", images, registries), Confidence: 75, Evidence: matchingEvidence(raw, []string{"toomanyrequests", "rate limit"})})
 	}
+	if hasAnyEvidenceToken(raw, []string{"i/o timeout", "timeout", "connection reset", "connection refused"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Pulls for %s may be failing because %s is intermittently unreachable from CI.", images, registries), Confidence: 70, Evidence: matchingEvidence(raw, []string{"i/o timeout", "timeout", "connection reset", "connection refused"})})
+	}
+	if hasAnyEvidenceToken(raw, []string{"manifest unknown"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("%s may reference a missing or mutable tag that is producing manifest lookup failures.", images), Confidence: 72, Evidence: matchingEvidence(raw, []string{"manifest unknown"})})
+	}
+	if hasAnyEvidenceToken(raw, []string{"pull access denied"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Pulls for %s may be failing because registry authentication or image permissions are missing.", images), Confidence: 72, Evidence: matchingEvidence(raw, []string{"pull access denied"})})
+	}
+	if hasAnyEvidenceToken(raw, []string{"docker.io", "ghcr.io"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("The affected jobs depend on public registry pulls for %s via %s.", images, registries), Confidence: 55, Evidence: append(raw.Images, raw.Registries...)})
+	}
+	if hasAnyEvidenceToken(raw, []string{"image:", "creating container for image"}) && len(hypotheses) == 0 {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("The affected jobs reference %s during image/container setup, but the cached logs do not yet prove the root cause.", images), Confidence: 50, Evidence: append(raw.Images, failureEvidenceSnippets(raw)...)})
+	}
+	if len(hypotheses) == 0 {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Recurring image/container setup failures are affecting %s; inspect failed logs for the exact pull error, registry host, and image reference.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)})
+	}
+	return limitHypotheses(hypotheses, 5)
 }
 
 func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
 	packages := npmPackagePhrase(raw)
 	registry := joinOrFallback(raw.URLs, joinOrFallback(raw.Hosts, "the package registry"))
-	return []RootCauseHypothesis{
-		{Summary: fmt.Sprintf("Dependency resolution is failing for %s because the lockfile and package peer constraints disagree.", packages), Confidence: confidenceWithEvidence(78, matchingEvidence(raw, []string{"eresolve", "peer"})), Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})},
-		{Summary: fmt.Sprintf("Install failures correlate with access to %s.", registry), Confidence: confidenceWithEvidence(68, raw.URLs), Evidence: append(raw.URLs, failureEvidenceSnippets(raw)...)},
-		{Summary: fmt.Sprintf("The affected job is using stale dependency cache or lockfile state for %s.", packages), Confidence: 50, Evidence: raw.Modules},
+	jobs := joinOrFallback(raw.Jobs, "the affected jobs")
+	if len(raw.Modules) == 0 && len(raw.URLs) == 0 && !hasNPMRootCauseEvidence(raw) {
+		return []RootCauseHypothesis{
+			{Summary: fmt.Sprintf("A recurring npm/yarn dependency install failure is affecting %s. The current evidence does not identify a package, registry, or resolver error, so inspect the failed install logs before assigning root cause.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)},
+			{Summary: "The failure grouping is likely useful, but the cached evidence is too thin to distinguish lockfile, registry access, package manager, or cache failures.", Confidence: 35, Evidence: failureEvidenceSnippets(raw)},
+		}
 	}
+	var hypotheses []RootCauseHypothesis
+	if hasAnyEvidenceToken(raw, []string{"eresolve", "peer"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s because the lockfile and package peer constraints disagree.", packages), Confidence: 78, Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})})
+	}
+	if len(raw.URLs) > 0 && hasAnyEvidenceToken(raw, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "registry", "http", "https"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Install failures may correlate with access to %s.", registry), Confidence: 68, Evidence: append(raw.URLs, failureEvidenceSnippets(raw)...)})
+	}
+	if len(raw.Modules) > 0 && hasAnyEvidenceToken(raw, []string{"lockfile", "immutable", "would have been modified"}) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("The affected job may be using lockfile state that disagrees with %s.", packages), Confidence: 62, Evidence: append(raw.Modules, matchingEvidence(raw, []string{"lockfile", "immutable", "would have been modified"})...)})
+	}
+	if len(hypotheses) == 0 {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("A recurring npm/yarn dependency install failure is affecting %s; inspect failed logs for resolver errors, package names, registry URLs, and lockfile messages.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)})
+	}
+	return limitHypotheses(hypotheses, 5)
 }
 
 func testHypotheses(raw RawEvidence) []RootCauseHypothesis {
@@ -613,6 +654,37 @@ func npmPackagePhrase(raw RawEvidence) string {
 		return "the dependency install"
 	}
 	return "referenced packages " + strings.Join(raw.Modules, ", ")
+}
+
+func hasImageRootCauseEvidence(raw RawEvidence) bool {
+	return hasAnyEvidenceToken(raw, []string{"toomanyrequests", "rate limit", "i/o timeout", "connection reset", "manifest unknown", "pull access denied", "docker.io", "ghcr.io", "image:", "creating container for image"})
+}
+
+func hasNPMRootCauseEvidence(raw RawEvidence) bool {
+	return hasAnyEvidenceToken(raw, []string{"eresolve", "peer", "lockfile", "immutable", "would have been modified", "econnreset", "etimedout", "timeout", "eai_again", "enotfound", "registry", "http", "https"})
+}
+
+func hasAnyEvidenceToken(raw RawEvidence, tokens []string) bool {
+	var evidence []string
+	evidence = append(evidence, raw.LogExcerpts...)
+	evidence = append(evidence, raw.Images...)
+	evidence = append(evidence, raw.Registries...)
+	evidence = append(evidence, raw.URLs...)
+	evidence = append(evidence, raw.Hosts...)
+	joined := strings.ToLower(strings.Join(evidence, "\n"))
+	for _, token := range tokens {
+		if strings.Contains(joined, strings.ToLower(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+func limitHypotheses(values []RootCauseHypothesis, limit int) []RootCauseHypothesis {
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
 
 func cleanResearchPackages(values []string) []string {

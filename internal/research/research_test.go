@@ -149,6 +149,50 @@ func TestNPMResearchDoesNotClaimReferencedPackagesWhenEvidenceIsEmpty(t *testing
 	}
 }
 
+func TestWeakImagePullEvidenceDoesNotAssertRootCause(t *testing.T) {
+	failureAnalysis := &failures.Analysis{
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-image-pull-failure",
+			Signature:   "image pull failure",
+			Occurrences: 6,
+			Jobs:        []string{"go-lint", "integration-test:matrix-03", "integration-test:matrix-11"},
+		}},
+	}
+
+	plan := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true)
+	opportunity := plan.Opportunities[0]
+	if !strings.Contains(opportunity.Hypothesis, "Recurring image/container setup failures are affecting go-lint, integration-test:matrix-03, integration-test:matrix-11") {
+		t.Fatalf("weak hypothesis over/under stated: %q", opportunity.Hypothesis)
+	}
+	for _, forbidden := range []string{"rate-limited", "unavailable", "manifest lookup", "mutable", "public registry"} {
+		if strings.Contains(opportunity.Hypothesis, forbidden) {
+			t.Fatalf("weak hypothesis asserted %q: %q", forbidden, opportunity.Hypothesis)
+		}
+	}
+}
+
+func TestWeakNPMEvidenceDoesNotAssertRootCause(t *testing.T) {
+	failureAnalysis := &failures.Analysis{
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-npm-install-failure",
+			Signature:   "npm install failure",
+			Occurrences: 4,
+			Jobs:        []string{"frontend"},
+		}},
+	}
+
+	plan := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true)
+	opportunity := plan.Opportunities[0]
+	if !strings.Contains(opportunity.Hypothesis, "recurring npm/yarn dependency install failure is affecting frontend") {
+		t.Fatalf("weak npm hypothesis over/under stated: %q", opportunity.Hypothesis)
+	}
+	for _, forbidden := range []string{"peer constraints disagree", "registry access", "lockfile state"} {
+		if strings.Contains(opportunity.Hypothesis, forbidden) {
+			t.Fatalf("weak npm hypothesis asserted %q: %q", forbidden, opportunity.Hypothesis)
+		}
+	}
+}
+
 func containsResearchString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
