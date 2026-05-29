@@ -75,7 +75,8 @@ func TestImagePullEvidenceOnlyUsesExplicitImageContexts(t *testing.T) {
 deadline:2026-05-29T17:42:00Z image pull timeout metadata
 test TestHTTP/17:42 failed while waiting for image pull
 Creating container for image mysql:8.0
-Creating container for image mysql:8.0`
+Creating container for image mysql:8.0
+failed to pull image mysql:8.0: manifest unknown`
 
 	analysis := Analyze("pr.yml", 10, 2, []Observation{{
 		Job:     "integration",
@@ -88,16 +89,19 @@ Creating container for image mysql:8.0`
 		t.Fatalf("images = %#v", got)
 	}
 	if len(theme.Evidence) != 1 {
-		t.Fatalf("expected duplicate image evidence to collapse, got %#v", theme.Evidence)
+		t.Fatalf("expected only failure lines as evidence, got %#v", theme.Evidence)
 	}
 	for _, evidence := range theme.Evidence {
+		if !isImagePullErrorLine(evidence.LogExcerpt) {
+			t.Fatalf("expected failure line evidence, got %#v", evidence)
+		}
 		if evidence.Image == "17:42" || strings.HasPrefix(evidence.Image, "deadline:") {
 			t.Fatalf("unexpected metadata image = %#v", evidence)
 		}
 	}
 }
 
-func TestImagePullEvidenceFromTestcontainersLifecycleLogs(t *testing.T) {
+func TestImagePullEvidenceIgnoresSuccessfulLifecycleLogs(t *testing.T) {
 	evidence := ExtractEvidence("image pull failure", Observation{
 		Job:   "integration",
 		RunID: "run-1",
@@ -109,13 +113,24 @@ func TestImagePullEvidenceFromTestcontainersLifecycleLogs(t *testing.T) {
 2026/05/29 14:57:37 Container is ready Port:3306`,
 	})
 
-	if len(evidence) != 2 {
+	if len(evidence) != 0 {
+		t.Fatalf("successful lifecycle logs should not produce failure evidence: %#v", evidence)
+	}
+}
+
+func TestImagePullEvidenceUsesAdjacentLifecycleImageForErrorLine(t *testing.T) {
+	evidence := ExtractEvidence("image pull failure", Observation{
+		Job:   "integration",
+		RunID: "run-1",
+		Message: `2026/05/29 14:57:32 Creating container for image mysql:8.0
+2026/05/29 14:57:33 failed to pull: manifest unknown`,
+	})
+
+	if len(evidence) != 1 {
 		t.Fatalf("evidence = %#v", evidence)
 	}
-	for _, item := range evidence {
-		if item.Image != "mysql:8.0" {
-			t.Fatalf("unexpected image evidence = %#v", item)
-		}
+	if evidence[0].Image != "mysql:8.0" || !strings.Contains(evidence[0].LogExcerpt, "failed to pull") {
+		t.Fatalf("unexpected evidence = %#v", evidence[0])
 	}
 }
 

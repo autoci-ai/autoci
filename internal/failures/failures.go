@@ -302,12 +302,20 @@ type ImagePullFailureExtractor struct{}
 
 func (ImagePullFailureExtractor) Extract(observation Observation) []FailureEvidence {
 	var result []FailureEvidence
-	for _, line := range diagnosticLines(observation.Message, []string{"image", "pull", "manifest", "registry", "container"}) {
+	lines := nonEmptyLines(observation.Message)
+	contextImages := imageReferences(observation.Message)
+	for _, line := range lines {
+		if !isImagePullErrorLine(line) {
+			continue
+		}
 		refs := imageReferences(line)
+		if len(refs) == 0 {
+			refs = contextImages
+		}
 		if len(refs) == 0 {
 			evidence := baseEvidence(observation, line)
 			evidence.PullError = pullError(line)
-			if evidence.PullError != "" && hasStandalonePullError(line) {
+			if evidence.PullError != "" {
 				result = append(result, evidence)
 			}
 			continue
@@ -425,6 +433,17 @@ func diagnosticLines(message string, terms []string) []string {
 	return result
 }
 
+func nonEmptyLines(message string) []string {
+	var result []string
+	for _, line := range strings.Split(message, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 func imageReferences(line string) []string {
 	var result []string
 	for _, pattern := range imageContextPatterns {
@@ -500,7 +519,7 @@ func imageDigest(ref string) string {
 
 func pullError(line string) string {
 	lower := strings.ToLower(line)
-	for _, term := range []string{"manifest unknown", "not found", "unauthorized", "denied", "context deadline exceeded", "timeout", "pull access denied", "too many requests"} {
+	for _, term := range []string{"pull access denied", "manifest unknown", "rate limit", "toomanyrequests", "too many requests", "failed to pull", "image pull", "no such host", "timeout", "connection reset", "connection refused", "not found", "unauthorized", "denied", "context deadline exceeded"} {
 		if strings.Contains(lower, term) {
 			return term
 		}
@@ -511,12 +530,20 @@ func pullError(line string) string {
 	return ""
 }
 
-func hasStandalonePullError(line string) bool {
+func isImagePullErrorLine(line string) bool {
 	lower := strings.ToLower(line)
-	for _, term := range []string{"manifest unknown", "not found", "unauthorized", "denied", "pull access denied", "too many requests"} {
+	for _, term := range []string{"check started", "waiting for image pull", "waiting for container", "metadata", "container is ready", "creating container", "created container", "started container", "connected to container"} {
+		if strings.Contains(lower, term) {
+			return false
+		}
+	}
+	for _, term := range []string{"pull access denied", "manifest unknown", "rate limit", "toomanyrequests", "too many requests", "failed to pull", "no such host", "timeout", "connection reset", "connection refused"} {
 		if strings.Contains(lower, term) {
 			return true
 		}
+	}
+	if strings.Contains(lower, "image pull") {
+		return strings.Contains(lower, "fail") || strings.Contains(lower, "error") || strings.Contains(lower, "denied")
 	}
 	return false
 }
