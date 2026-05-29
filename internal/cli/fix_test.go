@@ -71,7 +71,7 @@ func TestFixDryRunOverwritesStaleSuccessfulStateWhenNoPatchGenerated(t *testing.
 	}
 }
 
-func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
+func TestFixGeneratesYarnSnykInstrumentationForSnykIntegrityResearch(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
 	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
@@ -83,6 +83,9 @@ func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
       - name: Install dependencies
         run: corepack enable && yarn install --immutable
       - run: yarn test
+  other-job:
+    steps:
+      - run: echo unrelated
 `
 	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
 		t.Fatal(err)
@@ -92,8 +95,13 @@ func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
 		Signature:   "npm install failure",
 		Occurrences: 3,
 		Jobs:        []string{"frontend-unit-test"},
-		Artifacts:   failures.FailureArtifacts{Packages: []string{"snyk"}},
+		Artifacts:   failures.FailureArtifacts{Packages: []string{"snyk"}, URLs: []string{"https://downloads.snyk.io/cli/v1.1302.1/snyk-linux"}},
 		Evidence: []failures.FailureEvidence{{
+			Job:         "frontend-unit-test",
+			PackageName: "snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - downloading https://downloads.snyk.io/cli/v1.1302.1/snyk-linux",
+			RegistryURL: "https://downloads.snyk.io/cli/v1.1302.1/snyk-linux",
+		}, {
 			Job:         "frontend-unit-test",
 			PackageName: "snyk",
 			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - actual: abc123",
@@ -123,18 +131,81 @@ func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
 	}
 	output := out.String()
 	for _, want := range []string{
-		"Cannot generate fix.",
-		"Readiness: needs_more_evidence",
-		"Snyk checksum evidence does not distinguish between network instability, cache corruption, upstream Snyk availability, or checksum verification behavior",
-		"AutoCI cannot select a safe surgical workflow patch for the Snyk install failure from cached evidence alone",
-		"Generate an instrumentation patch to capture the missing evidence before assigning a root cause.",
+		"Patch type: instrumentation",
+		"Patch generated: yes",
+		"Workflow jobs touched:",
+		"- frontend-unit-test",
+		"AutoCI capture yarn install diagnostics",
+		"Reason: Readiness is needs_more_evidence; generated instrumentation from Snyk/Yarn install gaps",
+		"+      - name: AutoCI capture yarn install diagnostics",
+		"+        if: failure()",
+		"+          node --version || true",
+		"+          corepack --version || true",
+		"+          yarn --version || true",
+		"+          yarn config || true",
+		"+          yarn config get cacheFolder || yarn cache dir || true",
+		"+          curl -fsSIL --max-time 10 https://downloads.snyk.io/",
+		"+          curl -fsSIL --max-time 10 https://repo.yarnpkg.com/",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
 	}
-	if strings.Contains(output, "Patch: generated") || strings.Contains(output, "+        run:") {
-		t.Fatalf("Snyk integrity evidence generated a generic retry:\n%s", output)
+	if strings.Contains(output, "until yarn install --immutable") || strings.Contains(output, "+          yarn install") {
+		t.Fatalf("Snyk instrumentation wrapped or reran install:\n%s", output)
+	}
+	if strings.Contains(output, "other-job") {
+		t.Fatalf("unrelated job modified:\n%s", output)
+	}
+}
+
+func TestFixJSONYarnSnykInstrumentationIsValid(t *testing.T) {
+	dir := setupSnykInstrumentationFixState(t)
+	output, err := runFixOutput(t, dir, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		SourceID       string              `json:"sourceId"`
+		Readiness      lifecycle.Readiness `json:"readiness"`
+		FixType        string              `json:"fixType"`
+		PatchGenerated bool                `json:"patchGenerated"`
+		PatchApplied   bool                `json:"patchApplied"`
+		Targets        []struct {
+			Workflow    string   `json:"workflow"`
+			Job         string   `json:"job"`
+			Step        string   `json:"step"`
+			DerivedFrom []string `json:"derivedFrom"`
+		} `json:"targets"`
+		PatchScope struct {
+			JobsTouched  []string `json:"jobsTouched"`
+			StepsTouched []string `json:"stepsTouched"`
+		} `json:"patchScope"`
+		Diff string `json:"diff"`
+	}
+	assertJSONOnlyAndJQ(t, output, &plan)
+	if plan.SourceID != "failure-theme-npm-install-failure" || plan.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
+		t.Fatalf("plan = %#v\n%s", plan, output)
+	}
+	if !plan.PatchGenerated || plan.PatchApplied || plan.FixType != "instrumentation" {
+		t.Fatalf("patch status = %#v\n%s", plan, output)
+	}
+	if len(plan.Targets) != 1 || plan.Targets[0].Job != "frontend-unit-test" || plan.Targets[0].Step != "AutoCI capture yarn install diagnostics" {
+		t.Fatalf("targets = %#v", plan.Targets)
+	}
+	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "frontend-unit-test" {
+		t.Fatalf("jobsTouched = %#v", plan.PatchScope.JobsTouched)
+	}
+	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture yarn install diagnostics" {
+		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
+	}
+	for _, want := range []string{"AutoCI capture yarn install diagnostics", "if: failure()", "node --version || true", "downloads.snyk.io", "repo.yarnpkg.com"} {
+		if !strings.Contains(plan.Diff, want) {
+			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
+		}
+	}
+	if strings.Contains(plan.Diff, "until yarn install") {
+		t.Fatalf("instrumentation diff retried install:\n%s", plan.Diff)
 	}
 }
 
@@ -681,6 +752,60 @@ func setupTransientInstallFixState(t *testing.T) string {
 			Job:          "frontend-unit-test",
 			LogExcerpt:   "corepack enable && yarn install --immutable failed with ETIMEDOUT while accessing registry.yarnpkg.com",
 			InstallError: "yarn install failed with ETIMEDOUT",
+		}},
+	}}}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+	target, err := research.Targeted(dir, "", "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := state.WriteTargetedResearch(dir, target.ID, target, research.WriteTargetMarkdown(target)); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func setupSnykInstrumentationFixState(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  frontend-unit-test:
+    steps:
+      - name: Install dependencies
+        run: corepack enable && yarn install --immutable
+      - run: yarn test
+  other-job:
+    steps:
+      - run: echo unrelated
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := failures.Analysis{Workflow: "pr.yml", FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 3,
+		Jobs:        []string{"frontend-unit-test"},
+		Artifacts:   failures.FailureArtifacts{Packages: []string{"snyk"}, URLs: []string{"https://downloads.snyk.io/cli/v1.1302.1/snyk-linux"}},
+		Evidence: []failures.FailureEvidence{{
+			Job:         "frontend-unit-test",
+			PackageName: "snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - downloading https://downloads.snyk.io/cli/v1.1302.1/snyk-linux",
+			RegistryURL: "https://downloads.snyk.io/cli/v1.1302.1/snyk-linux",
+		}, {
+			Job:         "frontend-unit-test",
+			PackageName: "snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - actual: abc123",
+		}, {
+			Job:         "frontend-unit-test",
+			PackageName: "snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - expected: def456",
 		}},
 	}}}
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {

@@ -538,6 +538,25 @@ func buildInstrumentationPatch(plan *Plan, original []byte, inspection workflowI
 	if isImagePull(plan.SourceID) || isImagePull(plan.ID) || strings.Contains(strings.ToLower(options.Signature), "image pull") {
 		return buildImagePullInstrumentationPatch(plan, original, inspection, options)
 	}
+	if shouldBuildDependencyInstallInstrumentation(plan, options) {
+		return buildDependencyInstallInstrumentationPatch(plan, original, inspection, options)
+	}
+	return false
+}
+
+func shouldBuildDependencyInstallInstrumentation(plan *Plan, options Options) bool {
+	if !(isDependencyInstall(plan.SourceID) || isDependencyInstall(plan.ID) || strings.Contains(strings.ToLower(options.Signature), "npm install")) {
+		return false
+	}
+	if isSnykIntegrityContext(options) {
+		return true
+	}
+	for _, gap := range options.Gaps {
+		switch gap.Type {
+		case "missing_root_cause_disambiguation", "missing_safe_patch_strategy", "missing_dependency_error":
+			return true
+		}
+	}
 	return false
 }
 
@@ -622,6 +641,112 @@ func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
 		`echo "::endgroup::"`,
 	)
 	return uniqueStringsPreserveOrder(commands)
+}
+
+func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) bool {
+	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, original)
+	if len(candidates) == 0 {
+		candidates = filterCommandsByJobs(inspection.Commands, options.TargetJobs)
+		candidates = filterCommands(candidates, isDependencyInstallCommand)
+	}
+	for _, candidate := range candidates {
+		plan.Targets = append(plan.Targets, candidate.Target)
+	}
+	if len(candidates) == 0 {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "Readiness is needs_more_evidence, but AutoCI could not find a dependency install step where npm/yarn diagnostics can be inserted."
+		return false
+	}
+	if len(candidates) > 1 {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "Readiness is needs_more_evidence, but multiple dependency install steps matched and AutoCI will not guess where to insert diagnostics."
+		return false
+	}
+	if strings.Contains(string(original), "AutoCI capture yarn install diagnostics") {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "The selected workflow already contains the AutoCI yarn install diagnostics step."
+		return false
+	}
+	candidate := candidates[0]
+	stepIndent := stepIndentForCommandLine(candidate.LineText)
+	replacement := instrumentationStepInsertAfter(candidate.LineText, stepIndent, "AutoCI capture yarn install diagnostics", yarnInstallInstrumentationCommands())
+	if replacement == "" {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "AutoCI found the dependency install step but could not insert diagnostics without rewriting unrelated workflow content."
+		return false
+	}
+	replacements := map[int]string{candidate.Line: replacement}
+	patched := applyLineReplacements(string(original), replacements)
+	plan.FixType = InstrumentationFix
+	plan.Confidence = "high"
+	plan.Hypothesis = primaryResearchHypothesis(options, "Snyk/Yarn install failure needs more diagnostic evidence before selecting a root-cause patch.")
+	plan.ChangeSummary = "Cannot safely generate a root-cause fix. Proposed instrumentation patch: capture Node/Corepack/Yarn versions, Yarn configuration/cache metadata, Snyk package files, binary checksums, safe environment metadata, and reachability to Snyk/Yarn download hosts after the install step fails."
+	plan.SuccessCriteria = "The next failed run includes enough Snyk/Yarn install diagnostics to distinguish network instability, cache corruption, upstream availability, or checksum verification behavior without rerunning install or mutating caches."
+	plan.Reason = "Readiness is needs_more_evidence; generated instrumentation from Snyk/Yarn install gaps: " + gapSummary(options.Gaps) + "."
+	plan.PatchGenerated = true
+	plan.Targets = []Target{{
+		Workflow:    candidate.Workflow,
+		Job:         candidate.Job,
+		Step:        "AutoCI capture yarn install diagnostics",
+		Command:     strings.Join(yarnInstallInstrumentationCommands(), "; "),
+		Line:        candidate.Line,
+		DerivedFrom: workflowJobDerivations(options.TargetJobs)[candidate.Job],
+	}}
+	plan.FilesChanged = []string{plan.Workflow}
+	plan.PatchScope = PatchScope{
+		FilesChanged:          1,
+		JobsTouched:           []string{candidate.Job},
+		StepsTouched:          []string{"AutoCI capture yarn install diagnostics"},
+		UnrelatedLinesChanged: 0,
+	}
+	plan.Diff = multiLineDiff(plan.Workflow, string(original), replacements)
+	plan.patchedContent = patched
+	plan.Validation = diagnosticNextSteps(plan.Workflow)
+	return true
+}
+
+func yarnInstallInstrumentationCommands() []string {
+	return []string{
+		`echo "::group::AutoCI yarn install diagnostics"`,
+		"node --version || true",
+		"corepack --version || true",
+		"yarn --version || true",
+		"yarn config || true",
+		"yarn config get cacheFolder || yarn cache dir || true",
+		`env | sort | grep -E '^(CI|NODE|YARN|COREPACK|NPM_CONFIG|npm_config)_' | grep -Ev '(TOKEN|PASSWORD|SECRET|KEY)=' || true`,
+		`if [ -d node_modules/snyk ]; then find node_modules/snyk -maxdepth 4 -type f -print || true; fi`,
+		`if [ -d node_modules/snyk ]; then find node_modules/snyk -maxdepth 4 -type f -exec sh -c 'for f do wc -c "$f"; shasum -a 256 "$f" 2>/dev/null || sha256sum "$f" 2>/dev/null || true; done' sh {} + || true; fi`,
+		`curl -fsSIL --max-time 10 https://downloads.snyk.io/ >/dev/null && echo "downloads.snyk.io reachable" || echo "downloads.snyk.io unreachable"`,
+		`curl -fsSIL --max-time 10 https://repo.yarnpkg.com/ >/dev/null && echo "repo.yarnpkg.com reachable" || echo "repo.yarnpkg.com unreachable"`,
+		`echo "::endgroup::"`,
+	}
+}
+
+func instrumentationStepInsertAfter(anchorLine, stepIndent, name string, commands []string) string {
+	if strings.TrimSpace(anchorLine) == "" || stepIndent == "" || name == "" || len(commands) == 0 {
+		return ""
+	}
+	bodyIndent := stepIndent + "  "
+	lines := []string{anchorLine}
+	lines = append(lines, stepIndent+"- name: "+name)
+	lines = append(lines, bodyIndent+"if: failure()")
+	lines = append(lines, bodyIndent+"run: |")
+	for _, command := range commands {
+		lines = append(lines, bodyIndent+"  "+command)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func stepIndentForCommandLine(line string) string {
+	indent := leadingWhitespace(line)
+	if len(indent) < 2 {
+		return ""
+	}
+	return indent[:len(indent)-2]
 }
 
 func instrumentationStepsAppend(anchorLine, stepIndent string, commands []string) string {
