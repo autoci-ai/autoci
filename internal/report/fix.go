@@ -33,6 +33,9 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 			if target.Step != "" {
 				fmt.Fprintf(w, " Step: %s", target.Step)
 			}
+			if target.Command != "" && target.Command != target.Step {
+				fmt.Fprintf(w, " Command: %s", target.Command)
+			}
 			fmt.Fprintln(w)
 		}
 	}

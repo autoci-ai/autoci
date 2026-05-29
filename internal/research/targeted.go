@@ -11,34 +11,37 @@ import (
 
 	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
+	"github.com/autoci-ai/autoci/internal/scanner"
 	"github.com/autoci-ai/autoci/internal/state"
+	stepresolver "github.com/autoci-ai/autoci/internal/workflow"
 )
 
 type TargetReport struct {
-	ID                       string                 `json:"id"`
-	Type                     string                 `json:"type"`
-	Workflow                 string                 `json:"workflow,omitempty"`
-	Jobs                     []string               `json:"jobs,omitempty"`
-	Occurrences              int                    `json:"occurrences,omitempty"`
-	Impact                   string                 `json:"impact,omitempty"`
-	Confidence               int                    `json:"confidence,omitempty"`
-	FailureTheme             *failures.FailureTheme `json:"failureTheme,omitempty"`
-	ProfileFinding           *profile.Finding       `json:"profileFinding,omitempty"`
-	ResearchOpportunity      *ResearchOpportunity   `json:"researchOpportunity,omitempty"`
-	SourceCommands           []SourceCommandData    `json:"sourceCommands,omitempty"`
-	RunIDs                   []string               `json:"runIds,omitempty"`
-	LogExcerpts              []string               `json:"logExcerpts,omitempty"`
-	Artifacts                map[string][]string    `json:"artifacts,omitempty"`
-	WorkflowContext          *WorkflowContext       `json:"workflowContext,omitempty"`
-	CurrentFinding           CurrentFinding         `json:"currentFinding"`
-	Evidence                 []string               `json:"evidence"`
-	WhatWeKnow               []string               `json:"whatWeKnow"`
-	WhatWeDoNotKnowYet       []string               `json:"whatWeDoNotKnowYet"`
-	RootCauseHypotheses      []RootCauseHypothesis  `json:"rootCauseHypotheses"`
-	RecommendedInvestigation []string               `json:"recommendedInvestigation"`
-	CandidateFixes           []string               `json:"candidateFixes"`
-	FixReadiness             string                 `json:"fixReadiness"`
-	FixNotes                 FixNotes               `json:"fixNotes"`
+	ID                       string                       `json:"id"`
+	Type                     string                       `json:"type"`
+	Workflow                 string                       `json:"workflow,omitempty"`
+	Jobs                     []string                     `json:"jobs,omitempty"`
+	Occurrences              int                          `json:"occurrences,omitempty"`
+	Impact                   string                       `json:"impact,omitempty"`
+	Confidence               int                          `json:"confidence,omitempty"`
+	FailureTheme             *failures.FailureTheme       `json:"failureTheme,omitempty"`
+	ProfileFinding           *profile.Finding             `json:"profileFinding,omitempty"`
+	ResearchOpportunity      *ResearchOpportunity         `json:"researchOpportunity,omitempty"`
+	SourceCommands           []SourceCommandData          `json:"sourceCommands,omitempty"`
+	RunIDs                   []string                     `json:"runIds,omitempty"`
+	LogExcerpts              []string                     `json:"logExcerpts,omitempty"`
+	Artifacts                map[string][]string          `json:"artifacts,omitempty"`
+	WorkflowContext          *WorkflowContext             `json:"workflowContext,omitempty"`
+	CandidateSteps           []stepresolver.CandidateStep `json:"candidateSteps,omitempty"`
+	CurrentFinding           CurrentFinding               `json:"currentFinding"`
+	Evidence                 []string                     `json:"evidence"`
+	WhatWeKnow               []string                     `json:"whatWeKnow"`
+	WhatWeDoNotKnowYet       []string                     `json:"whatWeDoNotKnowYet"`
+	RootCauseHypotheses      []RootCauseHypothesis        `json:"rootCauseHypotheses"`
+	RecommendedInvestigation []string                     `json:"recommendedInvestigation"`
+	CandidateFixes           []string                     `json:"candidateFixes"`
+	FixReadiness             string                       `json:"fixReadiness"`
+	FixNotes                 FixNotes                     `json:"fixNotes"`
 }
 
 type SourceCommandData struct {
@@ -64,13 +67,14 @@ type CurrentFinding struct {
 }
 
 type FixNotes struct {
-	ID         string                `json:"id"`
-	Readiness  string                `json:"readiness"`
-	Workflow   string                `json:"workflow,omitempty"`
-	Jobs       []string              `json:"jobs,omitempty"`
-	Artifacts  map[string][]string   `json:"artifacts,omitempty"`
-	Hypotheses []RootCauseHypothesis `json:"hypotheses,omitempty"`
-	NextSteps  []string              `json:"nextSteps,omitempty"`
+	ID             string                       `json:"id"`
+	Readiness      string                       `json:"readiness"`
+	Workflow       string                       `json:"workflow,omitempty"`
+	Jobs           []string                     `json:"jobs,omitempty"`
+	Artifacts      map[string][]string          `json:"artifacts,omitempty"`
+	Hypotheses     []RootCauseHypothesis        `json:"hypotheses,omitempty"`
+	NextSteps      []string                     `json:"nextSteps,omitempty"`
+	CandidateSteps []stepresolver.CandidateStep `json:"candidateSteps,omitempty"`
 }
 
 type targetAccumulator struct {
@@ -205,6 +209,7 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 		report.LogExcerpts = uniqueSortedCopy(append(report.LogExcerpts, report.ResearchOpportunity.RawEvidence.LogExcerpts...))
 	}
 	report.WorkflowContext = workflowContext(repoPath, workflow)
+	report.CandidateSteps = candidateStepsForReport(repoPath, report)
 	report.CurrentFinding = CurrentFinding{ID: report.ID, Type: report.Type, Workflow: report.Workflow, Jobs: report.Jobs, Occurrences: report.Occurrences, Impact: report.Impact, Confidence: report.Confidence}
 	report.Evidence = targetedEvidence(report)
 	report.WhatWeKnow = targetedKnownFacts(report)
@@ -213,7 +218,7 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.RecommendedInvestigation = targetedInvestigation(report)
 	report.CandidateFixes = targetedFixes(report)
 	report.FixReadiness = targetedFixReadiness(report)
-	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.FixReadiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation}
+	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.FixReadiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
 	return report
 }
 
@@ -230,6 +235,7 @@ func WriteTargetMarkdown(report TargetReport) []byte {
 	fmt.Fprintf(&out, "- Occurrences / impact: %s\n", occurrencesImpact(report))
 	fmt.Fprintf(&out, "- Confidence: `%d`\n\n", report.CurrentFinding.Confidence)
 	writeMarkdownSection(&out, "Evidence", report.Evidence)
+	writeCandidateSteps(&out, report.CandidateSteps)
 	writeMarkdownSection(&out, "What we know", report.WhatWeKnow)
 	writeMarkdownSection(&out, "What we do not know yet", report.WhatWeDoNotKnowYet)
 	fmt.Fprintln(&out, "## Root-cause hypotheses")
@@ -302,6 +308,10 @@ func targetedKnownFacts(report TargetReport) []string {
 	}
 	if report.WorkflowContext != nil {
 		facts = append(facts, "Local workflow file context was available at "+report.WorkflowContext.Path+".")
+	}
+	if len(report.CandidateSteps) > 0 {
+		step := report.CandidateSteps[0]
+		facts = append(facts, fmt.Sprintf("Best candidate workflow step is job %s command %q with confidence %.2f.", step.Job, step.Command, step.Confidence))
 	}
 	if len(facts) == 0 {
 		facts = append(facts, "AutoCI found the ID in cached state, but the cached item contains limited structured evidence.")
@@ -472,6 +482,22 @@ func writeMarkdownSection(out *bytes.Buffer, title string, values []string) {
 	fmt.Fprintln(out)
 }
 
+func writeCandidateSteps(out *bytes.Buffer, steps []stepresolver.CandidateStep) {
+	fmt.Fprintln(out, "## Candidate workflow steps")
+	if len(steps) == 0 {
+		fmt.Fprintln(out, "- No workflow step matched the finding with enough confidence.")
+		fmt.Fprintln(out)
+		return
+	}
+	for _, step := range steps {
+		fmt.Fprintf(out, "- `%s` `%s` line `%d` confidence `%.2f`: `%s`\n", step.Job, fallback(step.Name, step.Source), step.Line, step.Confidence, step.Command)
+		for _, why := range step.Why {
+			fmt.Fprintf(out, "  - Why: %s\n", why)
+		}
+	}
+	fmt.Fprintln(out)
+}
+
 func occurrencesImpact(report TargetReport) string {
 	if report.CurrentFinding.Occurrences > 0 {
 		return fmt.Sprintf("`%d` occurrences", report.CurrentFinding.Occurrences)
@@ -576,6 +602,44 @@ func workflowContext(repoPath, workflow string) *WorkflowContext {
 		return nil
 	}
 	return &WorkflowContext{Path: path, Content: string(data)}
+}
+
+func candidateStepsForReport(repoPath string, report TargetReport) []stepresolver.CandidateStep {
+	if report.Workflow == "" {
+		return nil
+	}
+	workflows, err := scanner.Scan(repoPath)
+	if err != nil {
+		return nil
+	}
+	for _, item := range workflows {
+		name := scanner.WorkflowName(repoPath, item)
+		if !workflowMatches(name, report.Workflow) {
+			continue
+		}
+		steps := stepresolver.Inventory(repoPath, name, item)
+		return stepresolver.CandidateSteps(steps, stepresolver.FindingContext{
+			ID:          report.ID,
+			Signature:   findingSignature(report),
+			Jobs:        report.Jobs,
+			Artifacts:   report.Artifacts,
+			LogExcerpts: report.LogExcerpts,
+		})
+	}
+	return nil
+}
+
+func findingSignature(report TargetReport) string {
+	if report.FailureTheme != nil {
+		return report.FailureTheme.Signature
+	}
+	if report.ResearchOpportunity != nil {
+		return report.ResearchOpportunity.Hypothesis
+	}
+	if report.ProfileFinding != nil {
+		return report.ProfileFinding.Title
+	}
+	return report.ID
 }
 
 func failureLogExcerpts(items []failures.FailureEvidence) []string {

@@ -65,7 +65,7 @@ func TestGenerateRefusesPackageManagerMismatch(t *testing.T) {
 		DryRun:       true,
 		TargetJobs:   []string{"frontend-unit-test"},
 		Occurrences:  3,
-		Signature:    "npm install failure",
+		Signature:    "pnpm install failure",
 	})
 	if err != nil {
 		t.Fatal(err)

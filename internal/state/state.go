@@ -80,6 +80,18 @@ func WriteTargetedResearch(repoPath, id string, evidence any, markdown []byte) (
 	return evidencePath, reportPath, nil
 }
 
+func ReadTargetedResearch[T any](repoPath, id string) (*T, error) {
+	data, err := os.ReadFile(filepath.Join(repoPath, ".autoci", "research", slug(id), "evidence.json"))
+	if err != nil {
+		return nil, err
+	}
+	var result T
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func WriteFix(repoPath string, data any) error {
 	id := extractID(data)
 	if id == "" {

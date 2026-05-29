@@ -6,8 +6,10 @@ import (
 	"github.com/autoci-ai/autoci/internal/fix"
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
+	"github.com/autoci-ai/autoci/internal/research"
 	"github.com/autoci-ai/autoci/internal/scanner"
 	"github.com/autoci-ai/autoci/internal/state"
+	stepresolver "github.com/autoci-ai/autoci/internal/workflow"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -41,6 +43,7 @@ func newFixCommand() *cobra.Command {
 			occurrences := 0
 			signature := ""
 			artifacts := map[string][]string{}
+			var candidateSteps []stepresolver.CandidateStep
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -56,6 +59,15 @@ func newFixCommand() *cobra.Command {
 					artifacts = item.Artifacts
 				} else {
 					evidence = "Selected opportunity: " + opportunityID
+				}
+				if target, err := state.ReadTargetedResearch[research.TargetReport](cfg.Path, opportunityID); err == nil {
+					candidateSteps = target.CandidateSteps
+					if len(target.Jobs) > 0 {
+						targetJobs = target.Jobs
+					}
+					if target.Workflow != "" {
+						workflowName = target.Workflow
+					}
 				}
 			} else {
 				depot := provider.DepotProvider{
@@ -88,16 +100,17 @@ func newFixCommand() *cobra.Command {
 			}
 
 			plan, err := fix.Generate(fix.Options{
-				RepoPath:     cfg.Path,
-				Workflow:     workflow,
-				WorkflowName: workflowName,
-				Opportunity:  opportunityID,
-				DryRun:       dryRun,
-				Evidence:     evidence,
-				TargetJobs:   targetJobs,
-				Occurrences:  occurrences,
-				Signature:    signature,
-				Artifacts:    artifacts,
+				RepoPath:       cfg.Path,
+				Workflow:       workflow,
+				WorkflowName:   workflowName,
+				Opportunity:    opportunityID,
+				DryRun:         dryRun,
+				Evidence:       evidence,
+				TargetJobs:     targetJobs,
+				Occurrences:    occurrences,
+				Signature:      signature,
+				Artifacts:      artifacts,
+				CandidateSteps: candidateSteps,
 			})
 			if err != nil {
 				return err

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/autoci-ai/autoci/internal/scanner"
+	stepresolver "github.com/autoci-ai/autoci/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,16 +49,17 @@ type PatchScope struct {
 }
 
 type Options struct {
-	RepoPath     string
-	Workflow     scanner.Workflow
-	WorkflowName string
-	Opportunity  string
-	DryRun       bool
-	Evidence     string
-	TargetJobs   []string
-	Occurrences  int
-	Signature    string
-	Artifacts    map[string][]string
+	RepoPath       string
+	Workflow       scanner.Workflow
+	WorkflowName   string
+	Opportunity    string
+	DryRun         bool
+	Evidence       string
+	TargetJobs     []string
+	Occurrences    int
+	Signature      string
+	Artifacts      map[string][]string
+	CandidateSteps []stepresolver.CandidateStep
 }
 
 type Record struct {
@@ -86,7 +88,9 @@ type workflowInspection struct {
 
 type commandTarget struct {
 	Target
-	LineText string
+	LineText   string
+	Confidence float64
+	Why        []string
 }
 
 type imageTarget struct {
@@ -111,6 +115,9 @@ func Generate(options Options) (Plan, error) {
 		plan.Confidence = "low"
 		plan.Reason = "AutoCI could not parse the workflow well enough to prove a target-safe edit."
 		return plan, nil
+	}
+	if commands := commandTargetsFromInventory(options.RepoPath, options.WorkflowName, options.Workflow, original); len(commands) > 0 {
+		inspection.Commands = commands
 	}
 
 	switch {
@@ -270,8 +277,11 @@ func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflo
 		plan.Reason = "The selected opportunity did not identify a target job, so AutoCI cannot prove which install command should change."
 		return
 	}
-	candidates := filterCommandsByJobs(inspection.Commands, options.TargetJobs)
-	candidates = filterCommands(candidates, isDependencyInstallCommand)
+	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, original)
+	if len(candidates) == 0 {
+		candidates = filterCommandsByJobs(inspection.Commands, options.TargetJobs)
+		candidates = filterCommands(candidates, isDependencyInstallCommand)
+	}
 	for _, candidate := range candidates {
 		plan.Targets = append(plan.Targets, candidate.Target)
 	}
@@ -294,7 +304,11 @@ func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflo
 		return
 	}
 	plan.Confidence = "medium"
-	plan.ChangeSummary = fmt.Sprintf("Wrap only `%s` in the `%s` job with bounded retry logic.", candidate.Command, candidate.Job)
+	if candidate.Confidence >= 0.90 {
+		plan.Confidence = "high"
+	}
+	plan.Reason = selectionReason(candidate)
+	plan.ChangeSummary = fmt.Sprintf("Target step: %s `%s`. Proposed change: retry the dependency install command up to 3 times with exponential backoff.", candidate.Job, candidate.Command)
 	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, strings.Replace(candidate.LineText, candidate.Command, updated, 1), candidate.Target)
 }
 
@@ -404,6 +418,53 @@ func inspectWorkflow(workflowName string, input []byte) (workflowInspection, err
 	return inspection, nil
 }
 
+func commandTargetsFromInventory(repoPath, workflowName string, workflow scanner.Workflow, original []byte) []commandTarget {
+	lines := strings.Split(string(original), "\n")
+	var result []commandTarget
+	for _, step := range stepresolver.Inventory(repoPath, workflowName, workflow) {
+		if step.Command == "" || !isSingleLine(step.Command) {
+			continue
+		}
+		result = append(result, commandTarget{
+			Target: Target{
+				Workflow: step.Workflow,
+				Job:      step.Job,
+				Step:     step.Command,
+				Command:  step.Command,
+				Line:     step.Line,
+			},
+			LineText: lineAt(lines, step.Line),
+		})
+	}
+	return result
+}
+
+func candidateCommandsFromResearch(steps []stepresolver.CandidateStep, workflowName string, original []byte) []commandTarget {
+	lines := strings.Split(string(original), "\n")
+	var result []commandTarget
+	for _, step := range steps {
+		if step.Workflow != "" && workflowName != "" && step.Workflow != workflowName {
+			continue
+		}
+		if step.Confidence < 0.65 || !stepresolver.IsDependencyInstallCommand(step.Command) || !isSingleLine(step.Command) {
+			continue
+		}
+		result = append(result, commandTarget{
+			Target: Target{
+				Workflow: workflowName,
+				Job:      step.Job,
+				Step:     step.Command,
+				Command:  step.Command,
+				Line:     step.Line,
+			},
+			LineText:   lineAt(lines, step.Line),
+			Confidence: step.Confidence,
+			Why:        step.Why,
+		})
+	}
+	return result
+}
+
 func applyLineDiff(original string, plan Plan) string {
 	if !plan.PatchGenerated || len(plan.Targets) == 0 {
 		return original
@@ -466,17 +527,34 @@ func retryCommand(command string) string {
 	if strings.Contains(command, "autoci_retry") || strings.Contains(command, "until ") {
 		return command
 	}
-	escaped := strings.ReplaceAll(command, `"`, `\"`)
-	return fmt.Sprintf(`n=0; until %s; do n=$((n+1)); [ "$n" -ge 3 ] && exit 1; sleep $((n * 5)); done`, escaped)
+	prefix, install := splitInstallCommand(command)
+	escaped := strings.ReplaceAll(install, `"`, `\"`)
+	retried := fmt.Sprintf(`n=0; until %s; do n=$((n+1)); [ "$n" -ge 3 ] && exit 1; sleep $((n * 5)); done`, escaped)
+	if prefix != "" {
+		return prefix + " && " + retried
+	}
+	return retried
+}
+
+func splitInstallCommand(command string) (string, string) {
+	lower := strings.ToLower(command)
+	index := -1
+	for _, token := range []string{"yarn install", "npm ci", "npm install", "pnpm install", "go mod download"} {
+		if found := strings.Index(lower, token); found >= 0 && (index == -1 || found < index) {
+			index = found
+		}
+	}
+	if index <= 0 {
+		return "", command
+	}
+	prefix := strings.TrimSpace(command[:index])
+	prefix = strings.TrimSuffix(prefix, "&&")
+	prefix = strings.TrimSpace(prefix)
+	return prefix, strings.TrimSpace(command[index:])
 }
 
 func isDependencyInstallCommand(command string) bool {
-	command = strings.TrimSpace(command)
-	return strings.HasPrefix(command, "npm ci") ||
-		strings.HasPrefix(command, "npm install") ||
-		strings.HasPrefix(command, "yarn install") ||
-		strings.HasPrefix(command, "pnpm install") ||
-		strings.HasPrefix(command, "go mod download")
+	return stepresolver.IsDependencyInstallCommand(strings.TrimSpace(command))
 }
 
 func signatureMatchesPackageManager(signature, command string) bool {
@@ -485,6 +563,8 @@ func signatureMatchesPackageManager(signature, command string) bool {
 	switch {
 	case signature == "" || strings.Contains(signature, "dependency install"):
 		return true
+	case strings.HasPrefix(signature, "npm install failure"):
+		return isDependencyInstallCommand(command)
 	case strings.Contains(signature, "npm"):
 		return strings.HasPrefix(command, "npm ")
 	case strings.Contains(signature, "yarn"):
@@ -498,6 +578,17 @@ func signatureMatchesPackageManager(signature, command string) bool {
 	default:
 		return true
 	}
+}
+
+func selectionReason(candidate commandTarget) string {
+	if candidate.Confidence <= 0 {
+		return fmt.Sprintf("Selected `%s` in job `%s` because it is the only dependency install command in the targeted job.", candidate.Command, candidate.Job)
+	}
+	reason := fmt.Sprintf("Selected `%s` in job `%s` with workflow-step confidence %.2f", candidate.Command, candidate.Job, candidate.Confidence)
+	if len(candidate.Why) > 0 {
+		reason += " because " + strings.Join(candidate.Why, ", ")
+	}
+	return reason + "."
 }
 
 func isImagePull(id string) bool {
