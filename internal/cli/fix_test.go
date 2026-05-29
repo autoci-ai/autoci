@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -244,6 +245,76 @@ func TestFixRejectsResearchEvidenceThatIsNotReady(t *testing.T) {
 	}
 }
 
+func TestFixJSONReadyForFixEmitsJSONOnly(t *testing.T) {
+	dir := setupTransientInstallFixState(t)
+	output, err := runFixOutput(t, dir, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		SourceID       string              `json:"sourceId"`
+		Workflow       string              `json:"workflow"`
+		Readiness      lifecycle.Readiness `json:"readiness"`
+		PatchGenerated bool                `json:"patchGenerated"`
+		PatchApplied   bool                `json:"patchApplied"`
+		Reason         string              `json:"reason"`
+		Validation     []string            `json:"validation"`
+	}
+	assertJSONOnlyAndJQ(t, output, &plan)
+	if plan.SourceID != "failure-theme-npm-install-failure" || plan.Workflow != "pr.yml" || plan.Readiness != lifecycle.ReadinessReadyForFix {
+		t.Fatalf("unexpected json plan: %#v\n%s", plan, output)
+	}
+	if !plan.PatchGenerated || plan.PatchApplied {
+		t.Fatalf("unexpected patch status: %#v", plan)
+	}
+}
+
+func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
+	dir := setupNoInstallFixState(t)
+	writeRawResearchEvidence(t, dir, "failure-theme-image-pull-failure", map[string]any{
+		"id":        "failure-theme-image-pull-failure",
+		"workflow":  "pr.yml",
+		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
+		"gaps": []map[string]any{
+			{"type": "missing_image", "message": "Exact failing image reference not identified"},
+		},
+	})
+
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--path", dir, "fix", "failure-theme-image-pull-failure", "--workflow", "pr.yml", "--dry-run", "--format", "json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		SourceID       string              `json:"sourceId"`
+		Workflow       string              `json:"workflow"`
+		Readiness      lifecycle.Readiness `json:"readiness"`
+		PatchGenerated bool                `json:"patchGenerated"`
+		PatchApplied   bool                `json:"patchApplied"`
+		Reason         string              `json:"reason"`
+		Gaps           []struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"gaps"`
+		Validation []string `json:"validation"`
+	}
+	assertJSONOnlyAndJQ(t, out.String(), &plan)
+	if plan.SourceID != "failure-theme-image-pull-failure" || plan.Workflow != "pr.yml" || plan.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
+		t.Fatalf("unexpected refusal json: %#v\n%s", plan, out.String())
+	}
+	if plan.PatchGenerated || plan.PatchApplied || plan.Reason != "Cannot generate fix because required evidence is missing." {
+		t.Fatalf("unexpected refusal status: %#v", plan)
+	}
+	if len(plan.Gaps) != 1 || plan.Gaps[0].Message != "Exact failing image reference not identified" {
+		t.Fatalf("gaps = %#v", plan.Gaps)
+	}
+	if len(plan.Validation) != 0 {
+		t.Fatalf("validation = %#v", plan.Validation)
+	}
+}
+
 type fixRecordSnapshot struct {
 	Data struct {
 		Workflow       string   `json:"workflow"`
@@ -257,11 +328,20 @@ type fixRecordSnapshot struct {
 
 func runFix(t *testing.T, dir string) error {
 	t.Helper()
+	_, err := runFixOutput(t, dir)
+	return err
+}
+
+func runFixOutput(t *testing.T, dir string, extraArgs ...string) (string, error) {
+	t.Helper()
 	root := newRootCommand()
 	var out bytes.Buffer
 	root.SetOut(&out)
-	root.SetArgs([]string{"--path", dir, "fix", "failure-theme-npm-install-failure", "--dry-run"})
-	return root.Execute()
+	args := []string{"--path", dir, "fix", "failure-theme-npm-install-failure", "--dry-run"}
+	args = append(args, extraArgs...)
+	root.SetArgs(args)
+	err := root.Execute()
+	return out.String(), err
 }
 
 func writeRawResearchEvidence(t *testing.T, dir, id string, data map[string]any) {
@@ -304,6 +384,65 @@ func setupNoInstallFixState(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func setupTransientInstallFixState(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  frontend-unit-test:
+    steps:
+      - name: Install dependencies
+        run: corepack enable && yarn install --immutable
+      - run: yarn test
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := failures.Analysis{Workflow: "pr.yml", FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 3,
+		Jobs:        []string{"frontend-unit-test"},
+		Evidence: []failures.FailureEvidence{{
+			Job:          "frontend-unit-test",
+			LogExcerpt:   "corepack enable && yarn install --immutable failed with ETIMEDOUT while accessing registry.yarnpkg.com",
+			InstallError: "yarn install failed with ETIMEDOUT",
+		}},
+	}}}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+	target, err := research.Targeted(dir, "", "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := state.WriteTargetedResearch(dir, target.ID, target, research.WriteTargetMarkdown(target)); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func assertJSONOnlyAndJQ(t *testing.T, output string, target any) {
+	t.Helper()
+	trimmed := strings.TrimSpace(output)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		t.Fatalf("output is not JSON-only:\n%s", output)
+	}
+	if err := json.Unmarshal([]byte(trimmed), target); err != nil {
+		t.Fatalf("output did not parse as JSON: %v\n%s", err, output)
+	}
+	if jq, err := exec.LookPath("jq"); err == nil {
+		cmd := exec.Command(jq, ".")
+		cmd.Stdin = strings.NewReader(output)
+		if combined, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("output did not parse with jq: %v\n%s\n%s", err, output, combined)
+		}
+	}
 }
 
 func readFixRecord(t *testing.T, dir string) (fixRecordSnapshot, string) {

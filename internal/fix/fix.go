@@ -14,23 +14,25 @@ import (
 )
 
 type Plan struct {
-	ID              string     `json:"id"`
-	SourceID        string     `json:"sourceId"`
-	Branch          string     `json:"branch,omitempty"`
-	Workflow        string     `json:"workflow"`
-	Hypothesis      string     `json:"hypothesis"`
-	Evidence        string     `json:"evidence"`
-	ChangeSummary   string     `json:"changeSummary"`
-	SuccessCriteria string     `json:"successCriteria"`
-	Confidence      string     `json:"confidence"`
-	Reason          string     `json:"reason,omitempty"`
-	PatchGenerated  bool       `json:"patchGenerated"`
-	PatchApplied    bool       `json:"patchApplied"`
-	Targets         []Target   `json:"targets,omitempty"`
-	PatchScope      PatchScope `json:"patchScope"`
-	Diff            string     `json:"diff,omitempty"`
-	Validation      []string   `json:"validation"`
-	FilesChanged    []string   `json:"filesChanged,omitempty"`
+	ID              string              `json:"id"`
+	SourceID        string              `json:"sourceId"`
+	Branch          string              `json:"branch,omitempty"`
+	Workflow        string              `json:"workflow"`
+	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
+	Hypothesis      string              `json:"hypothesis"`
+	Evidence        string              `json:"evidence"`
+	ChangeSummary   string              `json:"changeSummary"`
+	SuccessCriteria string              `json:"successCriteria"`
+	Confidence      string              `json:"confidence"`
+	Reason          string              `json:"reason,omitempty"`
+	PatchGenerated  bool                `json:"patchGenerated"`
+	PatchApplied    bool                `json:"patchApplied"`
+	Targets         []Target            `json:"targets,omitempty"`
+	PatchScope      PatchScope          `json:"patchScope"`
+	Diff            string              `json:"diff,omitempty"`
+	Validation      []string            `json:"validation"`
+	FilesChanged    []string            `json:"filesChanged,omitempty"`
+	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
 }
 
 type Target struct {
@@ -64,6 +66,12 @@ type Options struct {
 	Hypotheses     []Hypothesis
 	LogExcerpts    []string
 	Readiness      lifecycle.Readiness
+	Gaps           []EvidenceGap
+}
+
+type EvidenceGap struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 type Hypothesis struct {
@@ -73,22 +81,24 @@ type Hypothesis struct {
 }
 
 type Record struct {
-	ID              string     `json:"id"`
-	SourceItemID    string     `json:"sourceItemId"`
-	Workflow        string     `json:"workflow"`
-	Branch          string     `json:"branch,omitempty"`
-	Hypothesis      string     `json:"hypothesis"`
-	Evidence        string     `json:"evidence"`
-	ChangeSummary   string     `json:"changeSummary"`
-	SuccessCriteria string     `json:"successCriteria"`
-	Confidence      string     `json:"confidence"`
-	Reason          string     `json:"reason,omitempty"`
-	PatchGenerated  bool       `json:"patchGenerated"`
-	PatchApplied    bool       `json:"patchApplied"`
-	Targets         []Target   `json:"targets,omitempty"`
-	PatchScope      PatchScope `json:"patchScope"`
-	FilesChanged    []string   `json:"filesChanged"`
-	DryRun          bool       `json:"dryRun"`
+	ID              string              `json:"id"`
+	SourceItemID    string              `json:"sourceItemId"`
+	Workflow        string              `json:"workflow"`
+	Branch          string              `json:"branch,omitempty"`
+	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
+	Hypothesis      string              `json:"hypothesis"`
+	Evidence        string              `json:"evidence"`
+	ChangeSummary   string              `json:"changeSummary"`
+	SuccessCriteria string              `json:"successCriteria"`
+	Confidence      string              `json:"confidence"`
+	Reason          string              `json:"reason,omitempty"`
+	PatchGenerated  bool                `json:"patchGenerated"`
+	PatchApplied    bool                `json:"patchApplied"`
+	Targets         []Target            `json:"targets,omitempty"`
+	PatchScope      PatchScope          `json:"patchScope"`
+	FilesChanged    []string            `json:"filesChanged"`
+	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
+	DryRun          bool                `json:"dryRun"`
 }
 
 type workflowInspection struct {
@@ -115,6 +125,8 @@ func Generate(options Options) (Plan, error) {
 		id = "failure-theme-image-pull-failure"
 	}
 	plan := basePlan(id, sourceID, options.WorkflowName, options.Evidence)
+	plan.Readiness = options.Readiness
+	plan.Gaps = options.Gaps
 
 	original, err := os.ReadFile(options.Workflow.Path)
 	if err != nil {
@@ -173,6 +185,7 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		SourceItemID:    plan.SourceID,
 		Workflow:        plan.Workflow,
 		Branch:          plan.Branch,
+		Readiness:       plan.Readiness,
 		Hypothesis:      plan.Hypothesis,
 		Evidence:        plan.Evidence,
 		ChangeSummary:   plan.ChangeSummary,
@@ -184,6 +197,7 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		Targets:         emptyTargets(plan.Targets),
 		PatchScope:      plan.PatchScope,
 		FilesChanged:    emptyStrings(plan.FilesChanged),
+		Gaps:            plan.Gaps,
 		DryRun:          dryRun,
 	}
 }

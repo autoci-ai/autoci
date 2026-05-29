@@ -49,6 +49,7 @@ func newFixCommand() *cobra.Command {
 			var hypotheses []fix.Hypothesis
 			var logExcerpts []string
 			readiness := lifecycle.Readiness("")
+			var gaps []fix.EvidenceGap
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -67,18 +68,29 @@ func newFixCommand() *cobra.Command {
 				}
 				if target, err := state.ReadTargetedResearch[research.TargetReport](cfg.Path, opportunityID); err == nil {
 					if target.Readiness == "" {
+						if format == "json" {
+							return report.WriteFixJSON(cmd.OutOrStdout(), refusalPlan(opportunityID, workflowName, "", "Research evidence is missing readiness; rerun autoci research for this ID.", nil))
+						}
 						return fmt.Errorf("research evidence for %s is missing readiness; rerun autoci research %s", opportunityID, opportunityID)
 					}
 					if !target.Readiness.Valid() {
+						if format == "json" {
+							return report.WriteFixJSON(cmd.OutOrStdout(), refusalPlan(opportunityID, workflowName, target.Readiness, fmt.Sprintf("Research evidence has invalid readiness %q.", target.Readiness), nil))
+						}
 						return fmt.Errorf("research evidence for %s has invalid readiness %q", opportunityID, target.Readiness)
 					}
 					if target.Readiness != lifecycle.ReadinessReadyForFix {
+						gaps = fixGaps(target.Gaps)
+						if format == "json" {
+							return report.WriteFixJSON(cmd.OutOrStdout(), refusalPlan(opportunityID, target.Workflow, target.Readiness, "Cannot generate fix because required evidence is missing.", gaps))
+						}
 						return fmt.Errorf("cannot generate fix.\n\nReadiness: %s\n\nMissing evidence:\n%s", target.Readiness, formatEvidenceGaps(target.Gaps))
 					}
 					candidateSteps = target.CandidateSteps
 					hypotheses = fixHypotheses(target.RootCauseHypotheses)
 					logExcerpts = target.LogExcerpts
 					readiness = target.Readiness
+					gaps = fixGaps(target.Gaps)
 					if len(target.Jobs) > 0 {
 						targetJobs = target.Jobs
 					}
@@ -131,6 +143,7 @@ func newFixCommand() *cobra.Command {
 				Hypotheses:     hypotheses,
 				LogExcerpts:    logExcerpts,
 				Readiness:      readiness,
+				Gaps:           gaps,
 			})
 			if err != nil {
 				return err
@@ -165,6 +178,29 @@ func fixHypotheses(values []research.RootCauseHypothesis) []fix.Hypothesis {
 		result = append(result, fix.Hypothesis{Summary: value.Summary, Confidence: value.Confidence, Evidence: value.Evidence})
 	}
 	return result
+}
+
+func fixGaps(values []research.EvidenceGap) []fix.EvidenceGap {
+	var result []fix.EvidenceGap
+	for _, value := range values {
+		result = append(result, fix.EvidenceGap{Type: value.Type, Message: value.Message})
+	}
+	return result
+}
+
+func refusalPlan(sourceID, workflow string, readiness lifecycle.Readiness, reason string, gaps []fix.EvidenceGap) fix.Plan {
+	return fix.Plan{
+		ID:             "fix-" + strings.TrimPrefix(sourceID, "failure-theme-"),
+		SourceID:       sourceID,
+		Workflow:       workflow,
+		Readiness:      readiness,
+		Confidence:     "low",
+		Reason:         reason,
+		PatchGenerated: false,
+		PatchApplied:   false,
+		Validation:     []string{},
+		Gaps:           gaps,
+	}
 }
 
 func formatEvidenceGaps(gaps []research.EvidenceGap) string {
