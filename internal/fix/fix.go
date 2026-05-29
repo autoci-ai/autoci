@@ -15,38 +15,40 @@ import (
 )
 
 type Plan struct {
-	ID                     string              `json:"id"`
-	SourceID               string              `json:"sourceId"`
-	Branch                 string              `json:"branch,omitempty"`
-	Workflow               string              `json:"workflow"`
-	Readiness              lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType                FixType             `json:"fixType,omitempty"`
-	InstrumentationID      string              `json:"instrumentationId,omitempty"`
-	InstrumentationApplied bool                `json:"instrumentationApplied,omitempty"`
-	AffectedJobs           []string            `json:"affectedJobs,omitempty"`
-	Hypothesis             string              `json:"hypothesis"`
-	Evidence               string              `json:"evidence"`
-	ChangeSummary          string              `json:"changeSummary"`
-	SuccessCriteria        string              `json:"successCriteria"`
-	Confidence             string              `json:"confidence"`
-	Reason                 string              `json:"reason,omitempty"`
-	PatchGenerated         bool                `json:"patchGenerated"`
-	PatchApplied           bool                `json:"patchApplied"`
-	Targets                []Target            `json:"targets,omitempty"`
-	PatchScope             PatchScope          `json:"patchScope"`
-	Diff                   string              `json:"diff,omitempty"`
-	Validation             []string            `json:"validation"`
-	NextSteps              []string            `json:"nextSteps,omitempty"`
-	FilesChanged           []string            `json:"filesChanged,omitempty"`
-	Gaps                   []EvidenceGap       `json:"gaps,omitempty"`
-	patchedContent         string
+	ID                      string              `json:"id"`
+	SourceID                string              `json:"sourceId"`
+	Branch                  string              `json:"branch,omitempty"`
+	Workflow                string              `json:"workflow"`
+	Readiness               lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType                 FixType             `json:"fixType,omitempty"`
+	InstrumentationID       string              `json:"instrumentationId,omitempty"`
+	InstrumentationApplied  bool                `json:"instrumentationApplied,omitempty"`
+	ExistingInstrumentation bool                `json:"existingInstrumentation,omitempty"`
+	AffectedJobs            []string            `json:"affectedJobs,omitempty"`
+	Hypothesis              string              `json:"hypothesis"`
+	Evidence                string              `json:"evidence"`
+	ChangeSummary           string              `json:"changeSummary"`
+	SuccessCriteria         string              `json:"successCriteria"`
+	Confidence              string              `json:"confidence"`
+	Reason                  string              `json:"reason,omitempty"`
+	PatchGenerated          bool                `json:"patchGenerated"`
+	PatchApplied            bool                `json:"patchApplied"`
+	Targets                 []Target            `json:"targets,omitempty"`
+	PatchScope              PatchScope          `json:"patchScope"`
+	Diff                    string              `json:"diff,omitempty"`
+	Validation              []string            `json:"validation"`
+	NextSteps               []string            `json:"nextSteps,omitempty"`
+	FilesChanged            []string            `json:"filesChanged,omitempty"`
+	Gaps                    []EvidenceGap       `json:"gaps,omitempty"`
+	patchedContent          string
 }
 
 type FixType string
 
 const (
-	RootCauseFix       FixType = "root_cause"
-	InstrumentationFix FixType = "instrumentation"
+	RootCauseFix             FixType = "root_cause"
+	InstrumentationFix       FixType = "instrumentation"
+	InstrumentationUpdateFix FixType = "instrumentation_update"
 )
 
 type Target struct {
@@ -97,29 +99,30 @@ type Hypothesis struct {
 }
 
 type Record struct {
-	ID                     string              `json:"id"`
-	SourceItemID           string              `json:"sourceItemId"`
-	Workflow               string              `json:"workflow"`
-	Branch                 string              `json:"branch,omitempty"`
-	Readiness              lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType                FixType             `json:"fixType,omitempty"`
-	InstrumentationID      string              `json:"instrumentationId,omitempty"`
-	InstrumentationApplied bool                `json:"instrumentationApplied,omitempty"`
-	AffectedJobs           []string            `json:"affectedJobs,omitempty"`
-	Hypothesis             string              `json:"hypothesis"`
-	Evidence               string              `json:"evidence"`
-	ChangeSummary          string              `json:"changeSummary"`
-	SuccessCriteria        string              `json:"successCriteria"`
-	Confidence             string              `json:"confidence"`
-	Reason                 string              `json:"reason,omitempty"`
-	PatchGenerated         bool                `json:"patchGenerated"`
-	PatchApplied           bool                `json:"patchApplied"`
-	Targets                []Target            `json:"targets,omitempty"`
-	PatchScope             PatchScope          `json:"patchScope"`
-	FilesChanged           []string            `json:"filesChanged"`
-	Gaps                   []EvidenceGap       `json:"gaps,omitempty"`
-	NextSteps              []string            `json:"nextSteps,omitempty"`
-	DryRun                 bool                `json:"dryRun"`
+	ID                      string              `json:"id"`
+	SourceItemID            string              `json:"sourceItemId"`
+	Workflow                string              `json:"workflow"`
+	Branch                  string              `json:"branch,omitempty"`
+	Readiness               lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType                 FixType             `json:"fixType,omitempty"`
+	InstrumentationID       string              `json:"instrumentationId,omitempty"`
+	InstrumentationApplied  bool                `json:"instrumentationApplied,omitempty"`
+	ExistingInstrumentation bool                `json:"existingInstrumentation,omitempty"`
+	AffectedJobs            []string            `json:"affectedJobs,omitempty"`
+	Hypothesis              string              `json:"hypothesis"`
+	Evidence                string              `json:"evidence"`
+	ChangeSummary           string              `json:"changeSummary"`
+	SuccessCriteria         string              `json:"successCriteria"`
+	Confidence              string              `json:"confidence"`
+	Reason                  string              `json:"reason,omitempty"`
+	PatchGenerated          bool                `json:"patchGenerated"`
+	PatchApplied            bool                `json:"patchApplied"`
+	Targets                 []Target            `json:"targets,omitempty"`
+	PatchScope              PatchScope          `json:"patchScope"`
+	FilesChanged            []string            `json:"filesChanged"`
+	Gaps                    []EvidenceGap       `json:"gaps,omitempty"`
+	NextSteps               []string            `json:"nextSteps,omitempty"`
+	DryRun                  bool                `json:"dryRun"`
 }
 
 type workflowInspection struct {
@@ -188,7 +191,7 @@ func Generate(options Options) (Plan, error) {
 		plan.PatchApplied = true
 		return normalizePlan(plan), nil
 	}
-	if options.Readiness == lifecycle.ReadinessNeedsMoreEvidence && plan.FixType == InstrumentationFix && plan.Reason != "" {
+	if options.Readiness == lifecycle.ReadinessNeedsMoreEvidence && isInstrumentationFixType(plan.FixType) && plan.Reason != "" {
 		plan.Validation = diagnosticNextSteps(plan.Workflow)
 		return normalizePlan(plan), nil
 	}
@@ -235,12 +238,16 @@ func Generate(options Options) (Plan, error) {
 }
 
 func normalizePlan(plan Plan) Plan {
-	if plan.FixType == InstrumentationFix && plan.InstrumentationID == "" {
+	if isInstrumentationFixType(plan.FixType) && plan.InstrumentationID == "" {
 		plan.InstrumentationID = plan.SourceID
 	}
-	plan.InstrumentationApplied = plan.FixType == InstrumentationFix && plan.PatchApplied
+	plan.InstrumentationApplied = isInstrumentationFixType(plan.FixType) && plan.PatchApplied
 	plan.PatchScope = normalizePatchScope(plan.PatchScope)
 	return plan
+}
+
+func isInstrumentationFixType(fixType FixType) bool {
+	return fixType == InstrumentationFix || fixType == InstrumentationUpdateFix
 }
 
 func normalizePatchScope(scope PatchScope) PatchScope {
@@ -252,29 +259,30 @@ func normalizePatchScope(scope PatchScope) PatchScope {
 func NewRecord(plan Plan, dryRun bool) Record {
 	plan = normalizePlan(plan)
 	return Record{
-		ID:                     "fix-" + trimFixPrefix(plan.ID),
-		SourceItemID:           plan.SourceID,
-		Workflow:               plan.Workflow,
-		Branch:                 plan.Branch,
-		Readiness:              plan.Readiness,
-		FixType:                plan.FixType,
-		InstrumentationID:      plan.InstrumentationID,
-		InstrumentationApplied: plan.InstrumentationApplied,
-		AffectedJobs:           emptyStrings(plan.AffectedJobs),
-		Hypothesis:             plan.Hypothesis,
-		Evidence:               plan.Evidence,
-		ChangeSummary:          plan.ChangeSummary,
-		SuccessCriteria:        plan.SuccessCriteria,
-		Confidence:             plan.Confidence,
-		Reason:                 plan.Reason,
-		PatchGenerated:         plan.PatchGenerated,
-		PatchApplied:           plan.PatchApplied,
-		Targets:                emptyTargets(plan.Targets),
-		PatchScope:             plan.PatchScope,
-		FilesChanged:           emptyStrings(plan.FilesChanged),
-		Gaps:                   plan.Gaps,
-		NextSteps:              emptyStrings(plan.NextSteps),
-		DryRun:                 dryRun,
+		ID:                      "fix-" + trimFixPrefix(plan.ID),
+		SourceItemID:            plan.SourceID,
+		Workflow:                plan.Workflow,
+		Branch:                  plan.Branch,
+		Readiness:               plan.Readiness,
+		FixType:                 plan.FixType,
+		InstrumentationID:       plan.InstrumentationID,
+		InstrumentationApplied:  plan.InstrumentationApplied,
+		ExistingInstrumentation: plan.ExistingInstrumentation,
+		AffectedJobs:            emptyStrings(plan.AffectedJobs),
+		Hypothesis:              plan.Hypothesis,
+		Evidence:                plan.Evidence,
+		ChangeSummary:           plan.ChangeSummary,
+		SuccessCriteria:         plan.SuccessCriteria,
+		Confidence:              plan.Confidence,
+		Reason:                  plan.Reason,
+		PatchGenerated:          plan.PatchGenerated,
+		PatchApplied:            plan.PatchApplied,
+		Targets:                 emptyTargets(plan.Targets),
+		PatchScope:              plan.PatchScope,
+		FilesChanged:            emptyStrings(plan.FilesChanged),
+		Gaps:                    plan.Gaps,
+		NextSteps:               emptyStrings(plan.NextSteps),
+		DryRun:                  dryRun,
 	}
 }
 
@@ -578,11 +586,8 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 		plan.Reason = "Readiness is needs_more_evidence, but AutoCI could not find affected workflow jobs where image pull diagnostics can be inserted."
 		return false
 	}
-	if strings.Contains(string(original), "AutoCI capture container diagnostics") {
-		plan.FixType = InstrumentationFix
-		plan.Confidence = "low"
-		plan.Reason = "The selected workflow already contains the AutoCI container diagnostics step."
-		return false
+	if updateExistingInstrumentationPatch(plan, original, options, "AutoCI capture container diagnostics", "container diagnostics") {
+		return plan.PatchGenerated
 	}
 	replacements := map[int]string{}
 	var targets []Target
@@ -676,11 +681,8 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 		plan.Reason = "Readiness is needs_more_evidence, but multiple dependency install steps matched and AutoCI will not guess where to insert diagnostics."
 		return false
 	}
-	if strings.Contains(string(original), "AutoCI capture yarn install diagnostics") {
-		plan.FixType = InstrumentationFix
-		plan.Confidence = "low"
-		plan.Reason = "The selected workflow already contains the AutoCI yarn install diagnostics step."
-		return false
+	if updateExistingInstrumentationPatch(plan, original, options, "AutoCI capture yarn install diagnostics", "yarn install diagnostics") {
+		return plan.PatchGenerated
 	}
 	candidate := candidates[0]
 	stepIndent := stepIndentForCommandLine(candidate.LineText)
@@ -738,6 +740,136 @@ func yarnInstallInstrumentationCommands(instrumentationID string) []string {
 		`curl -fsSIL --max-time 10 https://repo.yarnpkg.com/ >/dev/null && echo "repo.yarnpkg.com reachable" || echo "repo.yarnpkg.com unreachable"`,
 		`echo "::endgroup::"`,
 	}
+}
+
+func updateExistingInstrumentationPatch(plan *Plan, original []byte, options Options, stepPrefix, label string) bool {
+	sourceID := strings.TrimSpace(plan.SourceID)
+	if sourceID == "" {
+		return false
+	}
+	lines := strings.Split(string(original), "\n")
+	allowedJobs := workflowJobDerivations(options.TargetJobs)
+	replacements := map[int]string{}
+	var targets []Target
+	var jobs []string
+	existingFound := false
+	idAlreadyPresent := true
+	for index, line := range lines {
+		if !strings.Contains(line, "- name: "+stepPrefix) {
+			continue
+		}
+		lineNumber := index + 1
+		job := workflowJobForLine(lines, lineNumber)
+		if len(allowedJobs) > 0 && len(allowedJobs[job]) == 0 {
+			continue
+		}
+		existingFound = true
+		stepName := instrumentationStepName(stepPrefix, sourceID)
+		if !strings.Contains(line, "["+sourceID+"]") {
+			replacements[lineNumber] = replaceInstrumentationStepName(line, stepPrefix, stepName)
+			idAlreadyPresent = false
+		}
+		if groupLine, ok := findInstrumentationGroupLine(lines, lineNumber); ok {
+			if !strings.Contains(lines[groupLine-1], "AutoCI diagnostics for "+sourceID) {
+				replacements[groupLine] = leadingWhitespace(lines[groupLine-1]) + fmt.Sprintf(`echo "::group::AutoCI diagnostics for %s"`, sourceID)
+				idAlreadyPresent = false
+			}
+		}
+		targets = append(targets, Target{
+			Workflow:    plan.Workflow,
+			Job:         job,
+			Step:        stepName,
+			Command:     "update existing AutoCI instrumentation metadata",
+			Line:        lineNumber,
+			DerivedFrom: allowedJobs[job],
+		})
+		jobs = append(jobs, job)
+	}
+	if !existingFound {
+		return false
+	}
+	plan.FixType = InstrumentationUpdateFix
+	plan.InstrumentationID = sourceID
+	plan.ExistingInstrumentation = true
+	plan.Confidence = "high"
+	plan.Hypothesis = "Existing AutoCI instrumentation is present but is missing stable finding correlation metadata."
+	plan.ChangeSummary = "Update existing AutoCI " + label + " instrumentation in place so future CI logs can be correlated to the originating finding."
+	plan.SuccessCriteria = "Future failed runs include the AutoCI diagnostics marker for " + sourceID + "."
+	plan.Targets = emptyTargets(targets)
+	plan.PatchScope = PatchScope{
+		FilesChanged:          0,
+		JobsTouched:           uniqueStringsPreserveOrder(jobs),
+		StepsTouched:          []string{instrumentationStepName(stepPrefix, sourceID)},
+		UnrelatedLinesChanged: 0,
+	}
+	plan.Validation = diagnosticNextSteps(plan.Workflow)
+	if len(replacements) == 0 || idAlreadyPresent {
+		plan.Confidence = "low"
+		plan.Reason = "The selected workflow already contains correlated AutoCI " + label + " instrumentation for " + sourceID + "."
+		return true
+	}
+	patched := applyLineReplacements(string(original), replacements)
+	plan.PatchGenerated = true
+	plan.FilesChanged = []string{plan.Workflow}
+	plan.PatchScope.FilesChanged = 1
+	plan.Reason = "Existing instrumentation found; adding finding correlation metadata."
+	plan.Diff = multiLineDiff(plan.Workflow, string(original), replacements)
+	plan.patchedContent = patched
+	return true
+}
+
+func replaceInstrumentationStepName(line, prefix, fullName string) string {
+	index := strings.Index(line, prefix)
+	if index < 0 {
+		return line
+	}
+	return line[:index] + fullName
+}
+
+func findInstrumentationGroupLine(lines []string, stepLine int) (int, bool) {
+	if stepLine <= 0 || stepLine > len(lines) {
+		return 0, false
+	}
+	stepIndent := indentWidth(lines[stepLine-1])
+	for line := stepLine + 1; line <= len(lines); line++ {
+		text := lines[line-1]
+		trimmed := strings.TrimSpace(text)
+		if line > stepLine+1 && strings.HasPrefix(trimmed, "- ") && indentWidth(text) <= stepIndent {
+			break
+		}
+		if strings.Contains(text, "::group::AutoCI") && strings.Contains(strings.ToLower(text), "diagnostics") {
+			return line, true
+		}
+	}
+	return 0, false
+}
+
+func workflowJobForLine(lines []string, lineNumber int) string {
+	if lineNumber <= 0 || lineNumber > len(lines) {
+		return ""
+	}
+	inJobs := false
+	job := ""
+	for line := 1; line <= lineNumber; line++ {
+		text := lines[line-1]
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "jobs:" {
+			inJobs = true
+			continue
+		}
+		if !inJobs || trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if indentWidth(text) == 0 && !strings.HasPrefix(trimmed, "jobs:") {
+			inJobs = false
+			job = ""
+			continue
+		}
+		if indentWidth(text) == 2 && strings.HasSuffix(trimmed, ":") && !strings.HasPrefix(trimmed, "- ") {
+			job = strings.TrimSuffix(trimmed, ":")
+		}
+	}
+	return job
 }
 
 func instrumentationStepName(base, instrumentationID string) string {

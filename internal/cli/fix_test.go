@@ -218,6 +218,70 @@ func TestFixJSONYarnSnykInstrumentationIsValid(t *testing.T) {
 	}
 }
 
+func TestFixUpdatesExistingYarnInstrumentationMetadata(t *testing.T) {
+	dir := setupSnykInstrumentationFixState(t)
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	workflow := `jobs:
+  frontend-unit-test:
+    steps:
+      - name: Install dependencies
+        run: corepack enable && yarn install --immutable
+      - name: AutoCI capture yarn install diagnostics
+        if: failure()
+        run: |
+          echo "::group::AutoCI yarn install diagnostics"
+          node --version || true
+          echo "::endgroup::"
+      - run: yarn test
+  other-job:
+    steps:
+      - run: echo unrelated
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err := runFixOutput(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Patch type: instrumentation_update",
+		"Patch generated: yes",
+		"Reason: Existing instrumentation found; adding finding correlation metadata.",
+		"Change: Update existing AutoCI yarn install diagnostics instrumentation in place",
+		"+      - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]",
+		"+          echo \"::group::AutoCI diagnostics for failure-theme-npm-install-failure\"",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "+        if: failure()\n+        run: |") {
+		t.Fatalf("update looked like a fresh instrumentation step:\n%s", output)
+	}
+
+	jsonOutput, err := runFixOutput(t, dir, "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		FixType                 string `json:"fixType"`
+		PatchGenerated          bool   `json:"patchGenerated"`
+		PatchApplied            bool   `json:"patchApplied"`
+		ExistingInstrumentation bool   `json:"existingInstrumentation"`
+		InstrumentationID       string `json:"instrumentationId"`
+		Reason                  string `json:"reason"`
+	}
+	assertJSONOnlyAndJQ(t, jsonOutput, &plan)
+	if plan.FixType != "instrumentation_update" || !plan.PatchGenerated || plan.PatchApplied || !plan.ExistingInstrumentation {
+		t.Fatalf("unexpected json plan: %#v\n%s", plan, jsonOutput)
+	}
+	if plan.InstrumentationID != "failure-theme-npm-install-failure" {
+		t.Fatalf("instrumentationId = %q", plan.InstrumentationID)
+	}
+}
+
 func TestFixGeneratesReadableRetryForTransientInstallEvidence(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
@@ -598,15 +662,16 @@ func TestFixHumanOutputShowsRuntimeAndWorkflowJobs(t *testing.T) {
 
 type fixRecordSnapshot struct {
 	Data struct {
-		SourceItemID           string   `json:"sourceItemId"`
-		Workflow               string   `json:"workflow"`
-		Confidence             string   `json:"confidence"`
-		InstrumentationID      string   `json:"instrumentationId"`
-		InstrumentationApplied bool     `json:"instrumentationApplied"`
-		PatchGenerated         bool     `json:"patchGenerated"`
-		Reason                 string   `json:"reason"`
-		FilesChanged           []string `json:"filesChanged"`
-		ChangeSummary          string   `json:"changeSummary"`
+		SourceItemID            string   `json:"sourceItemId"`
+		Workflow                string   `json:"workflow"`
+		Confidence              string   `json:"confidence"`
+		InstrumentationID       string   `json:"instrumentationId"`
+		InstrumentationApplied  bool     `json:"instrumentationApplied"`
+		ExistingInstrumentation bool     `json:"existingInstrumentation"`
+		PatchGenerated          bool     `json:"patchGenerated"`
+		Reason                  string   `json:"reason"`
+		FilesChanged            []string `json:"filesChanged"`
+		ChangeSummary           string   `json:"changeSummary"`
 	} `json:"data"`
 }
 

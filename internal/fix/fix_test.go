@@ -342,6 +342,98 @@ func TestGenerateYarnInstrumentationUsesExactWorkflowJobAndCommand(t *testing.T)
 	}
 }
 
+func TestGenerateUpdatesExistingYarnInstrumentationMetadata(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  frontend-unit-test:
+    steps:
+      - run: corepack enable && yarn install --immutable
+      - name: AutoCI capture yarn install diagnostics
+        if: failure()
+        run: |
+          echo "::group::AutoCI yarn install diagnostics"
+          node --version || true
+          echo "::endgroup::"
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
+		Gaps: []EvidenceGap{
+			{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish root cause"},
+			{Type: "missing_safe_patch_strategy", Message: "AutoCI cannot select a safe patch"},
+		},
+		LogExcerpts: []string{"snyk@npm:1.1302.1 STDERR - actual: abc123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.PatchGenerated || plan.FixType != InstrumentationUpdateFix || !plan.ExistingInstrumentation {
+		t.Fatalf("expected instrumentation update patch, got %#v", plan)
+	}
+	if plan.Reason != "Existing instrumentation found; adding finding correlation metadata." {
+		t.Fatalf("reason = %q", plan.Reason)
+	}
+	patched := applyLineDiff(readWorkflow(t, workflow), plan)
+	for _, want := range []string{
+		"- name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]",
+		`echo "::group::AutoCI diagnostics for failure-theme-npm-install-failure"`,
+	} {
+		if !strings.Contains(patched, want) {
+			t.Fatalf("patched workflow missing %q:\n%s", want, patched)
+		}
+	}
+	if strings.Contains(plan.Diff, "+      - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]\n+        if: failure()") {
+		t.Fatalf("update looked like a fresh instrumentation insertion:\n%s", plan.Diff)
+	}
+}
+
+func TestGenerateExistingCorrelatedYarnInstrumentationIsIdempotent(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  frontend-unit-test:
+    steps:
+      - run: corepack enable && yarn install --immutable
+      - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]
+        if: failure()
+        run: |
+          echo "::group::AutoCI diagnostics for failure-theme-npm-install-failure"
+          node --version || true
+          echo "::endgroup::"
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
+		Gaps: []EvidenceGap{
+			{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish root cause"},
+		},
+		LogExcerpts: []string{"snyk@npm:1.1302.1 STDERR - actual: abc123"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PatchGenerated {
+		t.Fatalf("expected idempotent no-op, got diff:\n%s", plan.Diff)
+	}
+	if !plan.ExistingInstrumentation || plan.InstrumentationID != "failure-theme-npm-install-failure" {
+		t.Fatalf("instrumentation metadata missing: %#v", plan)
+	}
+	if !strings.Contains(plan.Reason, "already contains correlated AutoCI yarn install diagnostics instrumentation") {
+		t.Fatalf("reason = %q", plan.Reason)
+	}
+}
+
 func TestGenerateYarnInstrumentationRefusesMissingExactCommand(t *testing.T) {
 	workflow := writeWorkflow(t, `jobs:
   frontend-unit-test:
