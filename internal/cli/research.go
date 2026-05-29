@@ -20,6 +20,7 @@ func newResearchCommand() *cobra.Command {
 			if format != "text" && format != "json" {
 				return fmt.Errorf("unsupported format %q: expected text or json", format)
 			}
+			reportPath := viper.GetString("research-report")
 			limit := viper.GetInt("research-limit")
 			repo := viper.GetString("research-repo")
 
@@ -42,21 +43,26 @@ func newResearchCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("profile CI history: %w", err)
 			}
-			plan := research.FromProfile(workflowName, runtimeProfile)
+			plan := research.FromProfileWithOptions(workflowName, runtimeProfile, cfg.Verbose)
 			if format == "json" {
 				return report.WriteResearchJSON(cmd.OutOrStdout(), plan)
 			}
 			report.WriteResearchTerminal(cmd.OutOrStdout(), plan)
+			if reportPath != "" {
+				return report.WriteResearchMarkdownFile(reportPath, plan)
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().String("format", "text", "output format: text or json")
 	cmd.Flags().Int("limit", 50, "number of recent workflow runs to inspect")
+	cmd.Flags().String("report", "", "write a Markdown research plan to this path")
 	cmd.Flags().String("repo", "", "repository filter in owner/name format")
 	cmd.Flags().String("workflow", "", "workflow to research by basename or relative path")
 	_ = viper.BindPFlag("research-format", cmd.Flags().Lookup("format"))
 	_ = viper.BindPFlag("research-limit", cmd.Flags().Lookup("limit"))
+	_ = viper.BindPFlag("research-report", cmd.Flags().Lookup("report"))
 	_ = viper.BindPFlag("research-repo", cmd.Flags().Lookup("repo"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
 

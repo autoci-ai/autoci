@@ -2,131 +2,209 @@ package research
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/autoci-ai/autoci/internal/profile"
 )
+
+const defaultOpportunityLimit = 3
 
 type Plan struct {
 	Workflow          string                `json:"workflow"`
 	RunsAnalyzed      int                   `json:"runsAnalyzed"`
 	TopRecommendation TopRecommendation     `json:"topRecommendation"`
 	Opportunities     []ResearchOpportunity `json:"opportunities"`
+	HiddenCount       int                   `json:"hiddenCount"`
 }
 
 type TopRecommendation struct {
 	Title         string `json:"title"`
 	Reason        string `json:"reason"`
 	ExpectedValue string `json:"expectedValue"`
+	WhyNow        string `json:"whyNow"`
 }
 
 type ResearchOpportunity struct {
-	ID              string `json:"id"`
-	Title           string `json:"title"`
-	Hypothesis      string `json:"hypothesis"`
-	Evidence        string `json:"evidence"`
-	Experiment      string `json:"experiment"`
-	SuccessCriteria string `json:"successCriteria"`
-	Risk            string `json:"risk"`
-	EstimatedImpact string `json:"estimatedImpact"`
+	ID                string   `json:"id"`
+	Title             string   `json:"title"`
+	Hypothesis        string   `json:"hypothesis"`
+	Evidence          string   `json:"evidence"`
+	Experiment        string   `json:"experiment"`
+	SuccessCriteria   string   `json:"successCriteria"`
+	Risk              string   `json:"risk"`
+	EstimatedImpact   string   `json:"estimatedImpact"`
+	SuggestedCommands []string `json:"suggestedCommands"`
+}
+
+type scoredOpportunity struct {
+	opportunity ResearchOpportunity
+	score       int
 }
 
 func FromProfile(workflowName string, runtimeProfile *profile.Profile) Plan {
+	return FromProfileWithOptions(workflowName, runtimeProfile, false)
+}
+
+func FromProfileWithOptions(workflowName string, runtimeProfile *profile.Profile, verbose bool) Plan {
 	plan := Plan{Workflow: workflowName, Opportunities: []ResearchOpportunity{}}
 	if len(runtimeProfile.Workflows) > 0 {
 		plan.RunsAnalyzed = runtimeProfile.Workflows[0].RunsAnalyzed
 	}
-	for _, finding := range runtimeProfile.Findings {
-		plan.Opportunities = append(plan.Opportunities, opportunityFor(finding))
+
+	backlog := buildBacklog(workflowName, runtimeProfile.Findings)
+	sort.SliceStable(backlog, func(i, j int) bool {
+		return backlog[i].score > backlog[j].score
+	})
+
+	limit := defaultOpportunityLimit
+	if verbose || len(backlog) < limit {
+		limit = len(backlog)
+	}
+	for _, item := range backlog[:limit] {
+		plan.Opportunities = append(plan.Opportunities, item.opportunity)
+	}
+	if !verbose && len(backlog) > limit {
+		plan.HiddenCount = len(backlog) - limit
 	}
 	plan.TopRecommendation = topRecommendation(plan.Opportunities)
 	return plan
 }
 
-func opportunityFor(finding profile.Finding) ResearchOpportunity {
+func buildBacklog(workflowName string, findings []profile.Finding) []scoredOpportunity {
+	var backlog []scoredOpportunity
+	var flakyFindings []profile.Finding
+	for _, finding := range findings {
+		if finding.ID == "flaky-job" {
+			flakyFindings = append(flakyFindings, finding)
+			continue
+		}
+		if suppressFinding(finding) {
+			continue
+		}
+		opportunity, score := opportunityFor(workflowName, finding)
+		backlog = append(backlog, scoredOpportunity{opportunity: opportunity, score: score})
+	}
+	if len(flakyFindings) > 0 {
+		opportunity, score := groupedFlakyOpportunity(workflowName, flakyFindings)
+		backlog = append(backlog, scoredOpportunity{opportunity: opportunity, score: score})
+	}
+	return backlog
+}
+
+func suppressFinding(finding profile.Finding) bool {
+	if finding.ID != "long-running-job" {
+		return false
+	}
+	return runtimeContribution(finding.Evidence) < 5
+}
+
+func opportunityFor(workflowName string, finding profile.Finding) (ResearchOpportunity, int) {
 	target := finding.Job
 	if target == "" {
 		target = finding.Workflow
 	}
+	commands := suggestedCommands(workflowName)
 	switch finding.ID {
 	case "repeated-failures":
 		return ResearchOpportunity{
-			ID:              "research-workflow-reliability",
-			Title:           "Investigate workflow reliability",
-			Hypothesis:      "Workflow failures are concentrated in one or more recurring failure modes.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Group recent failed runs by failed job and failure signature, then inspect the most common group first.",
-			SuccessCriteria: "Workflow failure rate falls below 5% or the dominant failure mode is identified.",
-			Risk:            "Low",
-			EstimatedImpact: "Reliability improvements are likely to provide more benefit than runtime optimization.",
-		}
-	case "flaky-job":
-		return ResearchOpportunity{
-			ID:              "research-flaky-" + slug(target),
-			Title:           fmt.Sprintf("Investigate %s instability", target),
-			Hypothesis:      "Failures are caused by nondeterministic test ordering, timing, environment setup, or external dependencies.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Run the job repeatedly in isolation and compare failing runs against passing runs.",
-			SuccessCriteria: "Failure rate falls below 2% or the root cause is identified.",
-			Risk:            "Low",
-			EstimatedImpact: "Improved workflow reliability.",
-		}
+			ID:                "workflow-reliability",
+			Title:             "Investigate workflow reliability",
+			Hypothesis:        "Workflow failures are concentrated in one or more recurring failure modes.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Group recent failed runs by failed job and failure signature, then inspect the most common group first.",
+			SuccessCriteria:   "Workflow failure rate falls below 5% or the dominant failure mode is identified.",
+			Risk:              "Low",
+			EstimatedImpact:   "Reliability improvements are likely to provide more benefit than runtime optimization.",
+			SuggestedCommands: commands,
+		}, 100
 	case "failure-aggregation-job":
 		return ResearchOpportunity{
-			ID:              "research-upstream-failures-" + slug(target),
-			Title:           fmt.Sprintf("Trace upstream failures behind %s", target),
-			Hypothesis:      "This job reports upstream failures rather than failing independently.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Map failed runs to upstream failed jobs and identify the recurring source jobs.",
-			SuccessCriteria: "The upstream job or failure signature responsible for aggregation failures is identified.",
-			Risk:            "Low",
-			EstimatedImpact: "Prevents wasted effort optimizing or retrying a status aggregation job.",
-		}
+			ID:                "failure-aggregation",
+			Title:             fmt.Sprintf("Trace upstream failures behind %s", target),
+			Hypothesis:        "This job reports upstream failures rather than failing independently.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Map failed runs to upstream failed jobs and identify the recurring source jobs.",
+			SuccessCriteria:   "The upstream job or failure signature responsible for aggregation failures is identified.",
+			Risk:              "Low",
+			EstimatedImpact:   "Prevents wasted effort optimizing or retrying a status aggregation job.",
+			SuggestedCommands: commands,
+		}, 74
 	case "high-leverage-slow-job":
 		return ResearchOpportunity{
-			ID:              "research-runtime-" + slug(target),
-			Title:           fmt.Sprintf("Reduce runtime for %s", target),
-			Hypothesis:      "This job dominates measured runtime because of expensive setup, serial work, or unsharded tests.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Break down the job into setup, execution, and teardown timing; prototype sharding or cache changes for the largest segment.",
-			SuccessCriteria: "Average duration or runtime contribution drops by at least 20% without increasing failure rate.",
-			Risk:            "Medium",
-			EstimatedImpact: "Shorter feedback loops for the selected workflow.",
-		}
+			ID:                "high-leverage-runtime-" + slug(target),
+			Title:             fmt.Sprintf("Reduce runtime for %s", target),
+			Hypothesis:        "This job dominates measured runtime because of expensive setup, serial work, or unsharded tests.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Break down the job into setup, execution, and teardown timing; prototype sharding or cache changes for the largest segment.",
+			SuccessCriteria:   "Average duration or runtime contribution drops by at least 20% without increasing failure rate.",
+			Risk:              "Medium",
+			EstimatedImpact:   "Shorter feedback loops for the selected workflow.",
+			SuggestedCommands: commands,
+		}, 70 + runtimeContribution(finding.Evidence)
 	case "long-running-job":
 		return ResearchOpportunity{
-			ID:              "research-long-running-" + slug(target),
-			Title:           fmt.Sprintf("Characterize %s runtime", target),
-			Hypothesis:      "This job is long-running, but may not be the highest-leverage optimization target unless it blocks the critical path.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Measure whether the job gates workflow completion and identify its largest internal time segment.",
-			SuccessCriteria: "The team can decide whether to defer optimization or pursue a targeted 15% duration reduction.",
-			Risk:            "Low",
-			EstimatedImpact: "Improved prioritization of runtime optimization work.",
-		}
+			ID:                "runtime-characterization-" + slug(target),
+			Title:             fmt.Sprintf("Characterize %s runtime", target),
+			Hypothesis:        "This job is long-running, but may not be the highest-leverage optimization target unless it blocks the critical path.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Measure whether the job gates workflow completion and identify its largest internal time segment.",
+			SuccessCriteria:   "The team can decide whether to defer optimization or pursue a targeted 15% duration reduction.",
+			Risk:              "Low",
+			EstimatedImpact:   "Improved prioritization of runtime optimization work.",
+			SuggestedCommands: commands,
+		}, 35 + runtimeContribution(finding.Evidence)
 	case "high-variance":
 		return ResearchOpportunity{
-			ID:              "research-variance-" + slug(target),
-			Title:           fmt.Sprintf("Investigate runtime variance in %s", target),
-			Hypothesis:      "Runtime variance is caused by cache misses, external dependencies, queueing, or uneven test distribution.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Compare fast and slow runs for cache behavior, dependency fetch time, and test distribution.",
-			SuccessCriteria: "P95 duration moves within 50% of median duration or the variance source is identified.",
-			Risk:            "Low",
-			EstimatedImpact: "More predictable CI duration.",
-		}
+			ID:                "runtime-variance-" + slug(target),
+			Title:             fmt.Sprintf("Investigate runtime variance in %s", target),
+			Hypothesis:        "Runtime variance is caused by cache misses, external dependencies, queueing, or uneven test distribution.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Compare fast and slow runs for cache behavior, dependency fetch time, and test distribution.",
+			SuccessCriteria:   "P95 duration moves within 50% of median duration or the variance source is identified.",
+			Risk:              "Low",
+			EstimatedImpact:   "More predictable CI duration.",
+			SuggestedCommands: commands,
+		}, 55
 	default:
 		return ResearchOpportunity{
-			ID:              "research-" + slug(finding.ID+"-"+target),
-			Title:           finding.Title,
-			Hypothesis:      "The observed finding points to a measurable CI improvement opportunity.",
-			Evidence:        finding.Evidence,
-			Experiment:      "Inspect the underlying runs and propose a targeted change before executing experiments.",
-			SuccessCriteria: "The finding is explained by runtime evidence or deprioritized.",
-			Risk:            "Low",
-			EstimatedImpact: finding.Recommendation,
-		}
+			ID:                "ci-investigation-" + slug(finding.ID+"-"+target),
+			Title:             finding.Title,
+			Hypothesis:        "The observed finding points to a measurable CI improvement opportunity.",
+			Evidence:          finding.Evidence,
+			Experiment:        "Inspect the underlying runs and propose a targeted change before executing experiments.",
+			SuccessCriteria:   "The finding is explained by runtime evidence or deprioritized.",
+			Risk:              "Low",
+			EstimatedImpact:   finding.Recommendation,
+			SuggestedCommands: commands,
+		}, 40
 	}
+}
+
+func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (ResearchOpportunity, int) {
+	var evidence []string
+	score := 110
+	for _, finding := range findings {
+		name := finding.Job
+		if name == "" {
+			name = finding.Workflow
+		}
+		evidence = append(evidence, fmt.Sprintf("%s: %s", name, finding.Evidence))
+		score += minInt(8, failureRate(finding.Evidence))
+	}
+	return ResearchOpportunity{
+		ID:                "job-instability",
+		Title:             "Investigate recurring job instability",
+		Hypothesis:        "Multiple job failures may share recurring causes such as nondeterministic tests, timing, environment setup, or external dependencies.",
+		Evidence:          strings.Join(evidence, "\n"),
+		Experiment:        "Group failed runs by failure signature and identify recurring root causes.",
+		SuccessCriteria:   "Failure rate for the recurring jobs falls below 2% or the dominant root cause is identified.",
+		Risk:              "Low",
+		EstimatedImpact:   "Improved workflow reliability and less time spent chasing repeated CI failures.",
+		SuggestedCommands: suggestedCommands(workflowName),
+	}, score
 }
 
 func topRecommendation(opportunities []ResearchOpportunity) TopRecommendation {
@@ -135,6 +213,7 @@ func topRecommendation(opportunities []ResearchOpportunity) TopRecommendation {
 			Title:         "No research opportunity identified",
 			Reason:        "The sampled execution history did not produce enough evidence-backed findings.",
 			ExpectedValue: "Collect more workflow history before planning experiments.",
+			WhyNow:        "There is not enough signal yet to choose a high-value investigation.",
 		}
 	}
 	top := opportunities[0]
@@ -142,7 +221,53 @@ func topRecommendation(opportunities []ResearchOpportunity) TopRecommendation {
 		Title:         top.Title,
 		Reason:        top.Evidence,
 		ExpectedValue: top.EstimatedImpact,
+		WhyNow:        whyNow(top),
 	}
+}
+
+func whyNow(opportunity ResearchOpportunity) string {
+	switch {
+	case opportunity.ID == "workflow-reliability":
+		return "Workflow-level failures affect every developer waiting on this CI path."
+	case opportunity.ID == "job-instability":
+		return "Multiple flaky jobs are contributing to workflow failures."
+	case strings.HasPrefix(opportunity.ID, "high-leverage-runtime"):
+		return "The job consumes a large share of measured runtime, so improvements should be visible in workflow duration."
+	case strings.HasPrefix(opportunity.ID, "runtime-variance"):
+		return "High variance makes CI duration unpredictable and can hide cache or dependency problems."
+	default:
+		return "This is the highest-scoring opportunity in the current evidence set."
+	}
+}
+
+func suggestedCommands(workflowName string) []string {
+	return []string{
+		fmt.Sprintf("autoci profile --workflow %s", workflowName),
+		fmt.Sprintf("autoci research --workflow %s --verbose", workflowName),
+		"depot ci workflow list --output json",
+		"depot ci workflow show <workflow-id> --output json",
+	}
+}
+
+var percentPattern = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%`)
+
+func runtimeContribution(evidence string) int {
+	matches := percentPattern.FindAllStringSubmatch(evidence, -1)
+	if len(matches) == 0 {
+		return 0
+	}
+	// Contribution is the last percentage in current finding evidence.
+	value, _ := strconv.ParseFloat(matches[len(matches)-1][1], 64)
+	return int(value)
+}
+
+func failureRate(evidence string) int {
+	match := percentPattern.FindStringSubmatch(evidence)
+	if len(match) == 0 {
+		return 0
+	}
+	value, _ := strconv.ParseFloat(match[1], 64)
+	return int(value)
 }
 
 func slug(value string) string {
@@ -161,4 +286,11 @@ func slug(value string) string {
 		}
 	}
 	return strings.Trim(builder.String(), "-")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

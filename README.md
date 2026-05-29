@@ -63,7 +63,9 @@ Generate research hypotheses and proposed experiments:
 
 ```bash
 autoci research --workflow pr.yml
+autoci research --workflow pr.yml --report research.md
 autoci research --workflow pr.yml --format json
+autoci research --workflow pr.yml --verbose
 ```
 
 Validate with Depot:
@@ -132,4 +134,4 @@ Research is intended to bridge observation into planning:
 observe -> research -> experiment -> validate -> measure -> remember
 ```
 
-Current research output includes a top recommendation and opportunities with hypothesis, evidence, experiment, success criteria, risk, and estimated impact.
+Current research output includes a top recommendation and the top three highest-value opportunities by default. Additional opportunities are hidden unless `--verbose` is used. Each opportunity includes a stable ID, hypothesis, evidence, experiment, success criteria, risk, estimated impact, and suggested commands.
