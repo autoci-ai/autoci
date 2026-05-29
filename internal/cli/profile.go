@@ -13,7 +13,7 @@ import (
 func newProfileCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "profile",
-		Short: "Profile Depot CI runtime history",
+		Short: "Profile CI execution history",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reportPath := viper.GetString("profile-report")
 			limit := viper.GetInt("profile-limit")
@@ -48,7 +48,7 @@ func newProfileCommand() *cobra.Command {
 	cmd.Flags().String("report", "", "write a Markdown profile report to this path")
 	cmd.Flags().Int("limit", 50, "number of recent Depot workflows to inspect")
 	cmd.Flags().String("repo", "", "Depot repo filter in owner/name format")
-	cmd.Flags().String("workflow", "", "Depot workflow to profile by basename or relative path")
+	cmd.Flags().String("workflow", "", "workflow to profile by basename or relative path")
 	_ = viper.BindPFlag("profile-report", cmd.Flags().Lookup("report"))
 	_ = viper.BindPFlag("profile-limit", cmd.Flags().Lookup("limit"))
 	_ = viper.BindPFlag("profile-repo", cmd.Flags().Lookup("repo"))

@@ -16,7 +16,7 @@ func newAnalyzeCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "analyze",
-		Short: "Analyze Depot CI workflows",
+		Short: "Analyze CI workflows",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reportPath = viper.GetString("report")
 			format = viper.GetString("format")
@@ -51,7 +51,7 @@ func newAnalyzeCommand() *cobra.Command {
 
 	cmd.Flags().String("report", "", "write a Markdown report to this path")
 	cmd.Flags().String("format", "text", "output format: text or markdown")
-	cmd.Flags().String("workflow", "", "Depot workflow to analyze by basename or relative path")
+	cmd.Flags().String("workflow", "", "workflow to analyze by basename or relative path")
 	_ = viper.BindPFlag("report", cmd.Flags().Lookup("report"))
 	_ = viper.BindPFlag("format", cmd.Flags().Lookup("format"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))

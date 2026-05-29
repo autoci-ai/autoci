@@ -20,7 +20,7 @@ func Execute() error {
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "autoci",
-		Short:         "Analyze and validate CI workflows",
+		Short:         "Analyze, profile, and improve CI workflows.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -55,8 +55,10 @@ func newRootCommand() *cobra.Command {
 	viper.AutomaticEnv()
 
 	root.AddCommand(newAnalyzeCommand())
+	root.AddCommand(newDoctorCommand())
 	root.AddCommand(newProfileCommand())
 	root.AddCommand(newValidateCommand())
+	root.AddCommand(newVersionCommand())
 
 	root.SetOut(os.Stdout)
 	root.SetErr(os.Stderr)

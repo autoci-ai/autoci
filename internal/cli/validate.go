@@ -14,7 +14,7 @@ func newValidateCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "validate",
-		Short: "Validate Depot CI workflows by running Depot",
+		Short: "Validate workflow changes",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			allowDepotRun = viper.GetBool("allow-depot-run")
 			dryRun = viper.GetBool("dry-run")
