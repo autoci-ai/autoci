@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
@@ -17,9 +18,26 @@ import (
 
 func newResearchCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "research",
+		Use:   "research [id]",
 		Short: "Generate CI optimization research plans",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				target, err := research.Targeted(cfg.Path, viper.GetString("workflow"), args[0])
+				if err != nil {
+					return err
+				}
+				evidencePath, reportPath, err := state.WriteTargetedResearch(cfg.Path, target.ID, target, research.WriteTargetMarkdown(target))
+				if err != nil {
+					return err
+				}
+				relEvidence, _ := filepath.Rel(cfg.Path, evidencePath)
+				relReport, _ := filepath.Rel(cfg.Path, reportPath)
+				fmt.Fprintf(cmd.OutOrStdout(), "Wrote targeted research for %s\n", target.ID)
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", relEvidence)
+				fmt.Fprintf(cmd.OutOrStdout(), "- %s\n", relReport)
+				return nil
+			}
 			format := viper.GetString("research-format")
 			if format != "text" && format != "json" {
 				return fmt.Errorf("unsupported format %q: expected text or json", format)

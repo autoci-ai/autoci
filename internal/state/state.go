@@ -19,6 +19,13 @@ type Snapshot struct {
 	Data        any    `json:"data"`
 }
 
+type SnapshotRecord struct {
+	Command  string
+	Workflow string
+	Path     string
+	Snapshot Snapshot
+}
+
 type StoredItem struct {
 	ID             string
 	Evidence       string
@@ -51,6 +58,26 @@ func Write(repoPath, command, workflow string, data any) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, WorkflowFile(workflow)), append(out, '\n'), 0o644)
+}
+
+func WriteTargetedResearch(repoPath, id string, evidence any, markdown []byte) (string, string, error) {
+	dir := filepath.Join(repoPath, ".autoci", "research", slug(id))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	payload, err := json.MarshalIndent(evidence, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	evidencePath := filepath.Join(dir, "evidence.json")
+	reportPath := filepath.Join(dir, "research.md")
+	if err := os.WriteFile(evidencePath, append(payload, '\n'), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(reportPath, markdown, 0o644); err != nil {
+		return "", "", err
+	}
+	return evidencePath, reportPath, nil
 }
 
 func WriteFix(repoPath string, data any) error {
@@ -109,6 +136,39 @@ func Read(repoPath, command, workflow string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func List(repoPath, command string) ([]SnapshotRecord, error) {
+	dir := filepath.Join(repoPath, ".autoci", command)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var result []SnapshotRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var snapshot Snapshot
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return nil, err
+		}
+		result = append(result, SnapshotRecord{
+			Command:  command,
+			Workflow: snapshot.Workflow,
+			Path:     path,
+			Snapshot: snapshot,
+		})
+	}
+	return result, nil
 }
 
 func ReadData[T any](repoPath, command, workflow string) (*T, error) {
