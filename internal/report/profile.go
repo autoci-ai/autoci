@@ -35,6 +35,7 @@ func WriteProfileTerminal(w io.Writer, discovered []scanner.Workflow, runtimePro
 			target += " / " + finding.Job
 		}
 		fmt.Fprintf(w, "\n[%s] %s\n", finding.Severity, finding.Title)
+		fmt.Fprintf(w, "ID: %s\n", finding.ID)
 		fmt.Fprintf(w, "Target: %s\n", target)
 		fmt.Fprintf(w, "Evidence: %s\n", finding.Evidence)
 		fmt.Fprintf(w, "Recommendation: %s\n", finding.Recommendation)

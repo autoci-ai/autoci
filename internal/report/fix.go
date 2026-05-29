@@ -15,6 +15,7 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 		fmt.Fprintln(w, "Fix generated")
 	}
 	fmt.Fprintln(w)
+	fmt.Fprintf(w, "ID: %s\n", plan.ID)
 	fmt.Fprintf(w, "Branch: %s\n", plan.Branch)
 	fmt.Fprintf(w, "Workflow: %s\n", plan.Workflow)
 	fmt.Fprintf(w, "Hypothesis: %s\n", plan.Hypothesis)

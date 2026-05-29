@@ -23,6 +23,7 @@ func WriteFailuresTerminal(w io.Writer, analysis *failures.Analysis, verbose boo
 	fmt.Fprintln(w, "\nTop failure themes:")
 	for i, theme := range analysis.FailureThemes {
 		fmt.Fprintf(w, "\n%d. %s\n", i+1, theme.Signature)
+		fmt.Fprintf(w, "   ID: %s\n", theme.ID)
 		fmt.Fprintf(w, "   Occurrences: %d\n", theme.Occurrences)
 		if len(theme.Jobs) > 0 {
 			fmt.Fprintln(w, "   Jobs:")

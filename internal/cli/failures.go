@@ -6,6 +6,7 @@ import (
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	"github.com/autoci-ai/autoci/internal/state"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -42,6 +43,7 @@ func newFailuresCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("analyze CI failures: %w", err)
 			}
+			_ = state.Write(cfg.Path, "failures", workflowName, analysis)
 			if format == "json" {
 				return report.WriteFailuresJSON(cmd.OutOrStdout(), analysis)
 			}

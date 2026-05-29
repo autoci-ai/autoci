@@ -27,6 +27,7 @@ func WriteResearchTerminal(w io.Writer, plan research.Plan) {
 	fmt.Fprintln(w, "Research opportunities:")
 	for _, opportunity := range plan.Opportunities {
 		fmt.Fprintf(w, "\n%s\n", opportunity.Title)
+		fmt.Fprintf(w, "ID: %s\n", opportunity.ID)
 		fmt.Fprintf(w, "Hypothesis: %s\n", opportunity.Hypothesis)
 		fmt.Fprintf(w, "Evidence: %s\n", opportunity.Evidence)
 		fmt.Fprintf(w, "Experiment: %s\n", opportunity.Experiment)

@@ -7,6 +7,7 @@ import (
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	"github.com/autoci-ai/autoci/internal/state"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -34,11 +35,20 @@ func newFixCommand() *cobra.Command {
 				return err
 			}
 			workflowName := scanner.WorkflowName(cfg.Path, workflow)
-			opportunityID := ""
+			opportunityID := viper.GetString("fix-id")
 			evidence := ""
 			if len(args) > 0 {
+				if opportunityID != "" && opportunityID != args[0] {
+					return fmt.Errorf("--id and positional opportunity id differ")
+				}
 				opportunityID = args[0]
-				evidence = "Selected opportunity: " + opportunityID
+			}
+			if opportunityID != "" {
+				if item, ok := state.FindItem(cfg.Path, workflowName, opportunityID); ok {
+					evidence = item.Evidence
+				} else {
+					evidence = "Selected opportunity: " + opportunityID
+				}
 			} else {
 				depot := provider.DepotProvider{
 					Repo:           repo,
@@ -69,6 +79,7 @@ func newFixCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			_ = state.WriteFix(cfg.Path, fix.NewRecord(plan, dryRun))
 			if format == "json" {
 				return report.WriteFixJSON(cmd.OutOrStdout(), plan)
 			}
@@ -79,11 +90,13 @@ func newFixCommand() *cobra.Command {
 
 	cmd.Flags().Bool("dry-run", false, "generate the fix plan and diff without modifying files")
 	cmd.Flags().String("format", "text", "output format: text or json")
+	cmd.Flags().String("id", "", "AutoCI item ID to fix")
 	cmd.Flags().Int("limit", 50, "number of recent workflow runs to inspect when selecting a fix")
 	cmd.Flags().String("repo", "", "repository filter in owner/name format")
 	cmd.Flags().String("workflow", "", "workflow to fix by basename or relative path")
 	_ = viper.BindPFlag("fix-dry-run", cmd.Flags().Lookup("dry-run"))
 	_ = viper.BindPFlag("fix-format", cmd.Flags().Lookup("format"))
+	_ = viper.BindPFlag("fix-id", cmd.Flags().Lookup("id"))
 	_ = viper.BindPFlag("fix-limit", cmd.Flags().Lookup("limit"))
 	_ = viper.BindPFlag("fix-repo", cmd.Flags().Lookup("repo"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))

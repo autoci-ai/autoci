@@ -26,3 +26,9 @@ func TestApplyNPMInstallFixWrapsInstallCommand(t *testing.T) {
 		t.Fatalf("expected retry wrapper, got:\n%s", output)
 	}
 }
+
+func TestNormalizeResearchOpportunityID(t *testing.T) {
+	if got := normalizeOpportunity("research-image-pull-failure"); got != "failure-theme-image-pull-failure" {
+		t.Fatalf("normalized id = %q", got)
+	}
+}

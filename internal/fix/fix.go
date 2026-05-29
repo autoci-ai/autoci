@@ -23,6 +23,7 @@ type Plan struct {
 	Confidence      string   `json:"confidence"`
 	Diff            string   `json:"diff,omitempty"`
 	Validation      []string `json:"validation"`
+	FilesChanged    []string `json:"filesChanged,omitempty"`
 }
 
 type Options struct {
@@ -40,6 +41,7 @@ func Generate(options Options) (Plan, error) {
 		id = "failure-theme-image-pull-failure"
 	}
 	plan := basePlan(id, options.WorkflowName, options.Evidence)
+	plan.FilesChanged = []string{options.Workflow.Path}
 	original, err := os.ReadFile(options.Workflow.Path)
 	if err != nil {
 		return Plan{}, err
@@ -62,6 +64,36 @@ func Generate(options Options) (Plan, error) {
 		return Plan{}, err
 	}
 	return plan, nil
+}
+
+type Record struct {
+	ID              string   `json:"id"`
+	SourceItemID    string   `json:"sourceItemId"`
+	Workflow        string   `json:"workflow"`
+	Branch          string   `json:"branch"`
+	Hypothesis      string   `json:"hypothesis"`
+	Evidence        string   `json:"evidence"`
+	ChangeSummary   string   `json:"changeSummary"`
+	SuccessCriteria string   `json:"successCriteria"`
+	Confidence      string   `json:"confidence"`
+	FilesChanged    []string `json:"filesChanged"`
+	DryRun          bool     `json:"dryRun"`
+}
+
+func NewRecord(plan Plan, dryRun bool) Record {
+	return Record{
+		ID:              "fix-" + trimFixPrefix(plan.ID),
+		SourceItemID:    plan.ID,
+		Workflow:        plan.Workflow,
+		Branch:          plan.Branch,
+		Hypothesis:      plan.Hypothesis,
+		Evidence:        plan.Evidence,
+		ChangeSummary:   plan.ChangeSummary,
+		SuccessCriteria: plan.SuccessCriteria,
+		Confidence:      plan.Confidence,
+		FilesChanged:    plan.FilesChanged,
+		DryRun:          dryRun,
+	}
 }
 
 func basePlan(id, workflow, evidence string) Plan {
@@ -259,7 +291,15 @@ func unifiedDiff(path string, original, updated []byte) string {
 }
 
 func normalizeOpportunity(value string) string {
-	return strings.TrimSpace(value)
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "research-")
+	if strings.HasPrefix(value, "image-pull") {
+		return "failure-theme-image-pull-failure"
+	}
+	if strings.HasPrefix(value, "npm-install") {
+		return "failure-theme-npm-install-failure"
+	}
+	return value
 }
 
 func trimFixPrefix(value string) string {

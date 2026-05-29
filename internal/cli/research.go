@@ -7,6 +7,7 @@ import (
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/research"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	"github.com/autoci-ai/autoci/internal/state"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -45,6 +46,7 @@ func newResearchCommand() *cobra.Command {
 			}
 			failureAnalysis, _ := depot.Failures(cmd.Context(), workflowName)
 			plan := research.FromProfileAndFailures(workflowName, runtimeProfile, failureAnalysis, cfg.Verbose)
+			_ = state.Write(cfg.Path, "research", workflowName, plan)
 			if format == "json" {
 				return report.WriteResearchJSON(cmd.OutOrStdout(), plan)
 			}

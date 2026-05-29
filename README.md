@@ -80,6 +80,7 @@ Generate an experimental workflow fix:
 
 ```bash
 autoci fix --workflow pr.yml
+autoci fix --workflow pr.yml --id failure-theme-image-pull-failure
 autoci fix failure-theme-image-pull-failure --workflow pr.yml
 autoci fix --workflow pr.yml --dry-run
 autoci fix --workflow pr.yml --dry-run --format json
@@ -153,10 +154,14 @@ observe -> research -> experiment -> validate -> measure -> remember
 
 Current research output includes a top recommendation and the top three highest-value opportunities by default. Additional opportunities are hidden unless `--verbose` is used. Each opportunity includes a stable ID, hypothesis, evidence, experiment, success criteria, risk, estimated impact, and suggested commands.
 
+## Local State
+
+AutoCI writes local, repo-scoped JSON snapshots under `.autoci/` for `profile`, `failures`, `research`, and generated fixes. This state is inspectable, safe to delete, and ignored by git by default. Commands still work when state is missing.
+
 ## Failure Analysis
 
 `autoci failures` inspects recent failed workflow runs and groups failures into deterministic failure themes. Aggregation jobs such as `gate`, `required`, and `status` are excluded from root-cause ranking by default. It is intended to answer what is breaking, while `profile` answers what is happening and `research` answers what to investigate next.
 
 ## Fixes
 
-`autoci fix` creates a local branch and applies a workflow change when AutoCI has a deterministic fix generator for the selected opportunity. Fixes are treated as experiments: every generated change includes a hypothesis, evidence, change summary, success criteria, confidence, and the validation command to run next. AutoCI does not commit, push, or create pull requests.
+`autoci fix` creates a local branch and applies a workflow change when AutoCI has a deterministic fix generator for the selected opportunity. Use `--id` to target any AutoCI item from local state, such as a failure theme or research opportunity. Fixes are treated as experiments: every generated change includes a hypothesis, evidence, change summary, success criteria, confidence, and the validation command to run next. AutoCI does not commit, push, or create pull requests.

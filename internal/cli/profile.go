@@ -6,6 +6,7 @@ import (
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	"github.com/autoci-ai/autoci/internal/state"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -42,6 +43,7 @@ func newProfileCommand() *cobra.Command {
 				return fmt.Errorf("profile CI history: %w", err)
 			}
 			workflowName := scanner.WorkflowName(cfg.Path, workflow)
+			_ = state.Write(cfg.Path, "profile", workflowName, profile)
 			if format == "json" {
 				return report.WriteProfileJSON(cmd.OutOrStdout(), workflowName, profile)
 			}
