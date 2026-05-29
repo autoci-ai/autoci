@@ -478,7 +478,8 @@ func applyNotReadyPlan(plan *Plan, options Options) {
 	plan.Diff = ""
 	plan.FilesChanged = nil
 	plan.PatchScope = PatchScope{JobsTouched: []string{}, StepsTouched: []string{}}
-	reasons := notReadyReasons(options)
+	plan.Gaps = notReadyGaps(options)
+	reasons := gapMessages(plan.Gaps)
 	plan.Reason = strings.Join(reasons, "\n")
 	plan.ChangeSummary = "No patch generated. Research marked this finding as not ready for a safe workflow change."
 	plan.SuccessCriteria = "Collect the missing evidence, rerun targeted research, then generate a fix only when readiness becomes ready_for_fix."
@@ -488,18 +489,37 @@ func applyNotReadyPlan(plan *Plan, options Options) {
 	plan.Validation = plan.NextSteps
 }
 
-func notReadyReasons(options Options) []string {
-	var reasons []string
+func notReadyGaps(options Options) []EvidenceGap {
+	gaps := append([]EvidenceGap{}, options.Gaps...)
 	if len(options.CandidateSteps) == 0 {
-		reasons = append(reasons, "No workflow step matched the finding with enough confidence.")
+		gaps = append([]EvidenceGap{{Type: "missing_workflow_step_match", Message: "No workflow step matched the finding with enough confidence."}}, gaps...)
 	}
-	for _, gap := range options.Gaps {
+	if len(gaps) == 0 {
+		gaps = append(gaps, EvidenceGap{Type: "not_ready", Message: fmt.Sprintf("Research readiness is %s, so AutoCI cannot safely generate a workflow patch yet.", options.Readiness)})
+	}
+	return uniqueGaps(gaps)
+}
+
+func uniqueGaps(gaps []EvidenceGap) []EvidenceGap {
+	seen := map[string]bool{}
+	var result []EvidenceGap
+	for _, gap := range gaps {
+		key := gap.Type + "\x00" + gap.Message
+		if gap.Message == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, gap)
+	}
+	return result
+}
+
+func gapMessages(gaps []EvidenceGap) []string {
+	var reasons []string
+	for _, gap := range gaps {
 		if gap.Message != "" {
 			reasons = append(reasons, gap.Message)
 		}
-	}
-	if len(reasons) == 0 {
-		reasons = append(reasons, fmt.Sprintf("Research readiness is %s, so AutoCI cannot safely generate a workflow patch yet.", options.Readiness))
 	}
 	return uniqueStringsPreserveOrder(reasons)
 }

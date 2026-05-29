@@ -308,14 +308,55 @@ func TestFixJSONNotReadyProfileFindingIncludesGapsAndNextSteps(t *testing.T) {
 			t.Fatalf("reason missing %q: %#v", want, plan)
 		}
 	}
-	if len(plan.Gaps) != 1 || plan.Gaps[0].Message != "Representative log excerpts are not present in cached evidence." {
+	if len(plan.Gaps) != 2 {
 		t.Fatalf("gaps = %#v", plan.Gaps)
+	}
+	gapsByMessage := map[string]string{}
+	for _, gap := range plan.Gaps {
+		gapsByMessage[strings.TrimSuffix(gap.Message, ".")] = gap.Type
+	}
+	if gapsByMessage["No workflow step matched the finding with enough confidence"] != "missing_workflow_step_match" {
+		t.Fatalf("workflow step gap missing: %#v", plan.Gaps)
+	}
+	if gapsByMessage["Representative log excerpts are not present in cached evidence"] != "missing_logs" {
+		t.Fatalf("missing logs gap missing: %#v", plan.Gaps)
 	}
 	if len(plan.NextSteps) == 0 || !strings.Contains(strings.Join(plan.NextSteps, "\n"), "Inspect workflow steps for job go-unit-test:matrix-2") {
 		t.Fatalf("nextSteps = %#v", plan.NextSteps)
 	}
 	if strings.Contains(output, "No surgical fix generator is available") || strings.Contains(output, `"fixType": "root_cause"`) {
 		t.Fatalf("json contains generator/root cause claim:\n%s", output)
+	}
+}
+
+func TestFixNotReadyTextReasonsHaveStructuredJSONGaps(t *testing.T) {
+	dir := setupProfileNotReadyFixState(t)
+	textOutput, err := runFixOutputForID(t, dir, "high-variance-go-unit-test-matrix-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonOutput, err := runFixOutputForID(t, dir, "high-variance-go-unit-test-matrix-2", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		Gaps []struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"gaps"`
+	}
+	assertJSONOnlyAndJQ(t, jsonOutput, &plan)
+	gapsByMessage := map[string]bool{}
+	for _, gap := range plan.Gaps {
+		if gap.Type == "" {
+			t.Fatalf("gap missing type: %#v", gap)
+		}
+		gapsByMessage[strings.TrimSuffix(gap.Message, ".")] = true
+	}
+	for _, reason := range textReasonLines(textOutput) {
+		if !gapsByMessage[strings.TrimSuffix(reason, ".")] {
+			t.Fatalf("text reason %q missing structured gap in %#v\ntext:\n%s\njson:\n%s", reason, plan.Gaps, textOutput, jsonOutput)
+		}
 	}
 }
 
@@ -667,6 +708,28 @@ func assertJSONOnlyAndJQ(t *testing.T, output string, target any) {
 			t.Fatalf("output did not parse with jq: %v\n%s\n%s", err, output, combined)
 		}
 	}
+}
+
+func textReasonLines(output string) []string {
+	var reasons []string
+	inReason := false
+	for _, line := range strings.Split(output, "\n") {
+		switch strings.TrimSpace(line) {
+		case "Reason:":
+			inReason = true
+			continue
+		case "Next step:":
+			inReason = false
+		}
+		if !inReason {
+			continue
+		}
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			reasons = append(reasons, strings.TrimPrefix(line, "- "))
+		}
+	}
+	return reasons
 }
 
 func readFixRecord(t *testing.T, dir string) (fixRecordSnapshot, string) {
