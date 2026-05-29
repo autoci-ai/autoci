@@ -298,6 +298,10 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 			Type    string `json:"type"`
 			Message string `json:"message"`
 		} `json:"gaps"`
+		PatchScope struct {
+			JobsTouched  []string `json:"jobsTouched"`
+			StepsTouched []string `json:"stepsTouched"`
+		} `json:"patchScope"`
 		Validation []string `json:"validation"`
 	}
 	assertJSONOnlyAndJQ(t, out.String(), &plan)
@@ -312,6 +316,15 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	}
 	if len(plan.Validation) != 0 {
 		t.Fatalf("validation = %#v", plan.Validation)
+	}
+	if plan.PatchScope.JobsTouched == nil || len(plan.PatchScope.JobsTouched) != 0 {
+		t.Fatalf("jobsTouched = %#v", plan.PatchScope.JobsTouched)
+	}
+	if plan.PatchScope.StepsTouched == nil || len(plan.PatchScope.StepsTouched) != 0 {
+		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
+	}
+	if strings.Contains(out.String(), `"jobsTouched": null`) || strings.Contains(out.String(), `"stepsTouched": null`) {
+		t.Fatalf("nullable patchScope arrays in output:\n%s", out.String())
 	}
 }
 

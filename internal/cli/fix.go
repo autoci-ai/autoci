@@ -198,6 +198,7 @@ func refusalPlan(sourceID, workflow string, readiness lifecycle.Readiness, reaso
 		Reason:         reason,
 		PatchGenerated: false,
 		PatchApplied:   false,
+		PatchScope:     fix.PatchScope{JobsTouched: []string{}, StepsTouched: []string{}},
 		Validation:     []string{},
 		Gaps:           gaps,
 	}

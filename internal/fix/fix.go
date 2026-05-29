@@ -156,7 +156,7 @@ func Generate(options Options) (Plan, error) {
 
 	if !plan.PatchGenerated {
 		plan.Validation = diagnosticNextSteps(plan.Workflow)
-		return plan, nil
+		return normalizePlan(plan), nil
 	}
 	if plan.Confidence == "low" {
 		plan.PatchGenerated = false
@@ -164,10 +164,10 @@ func Generate(options Options) (Plan, error) {
 		plan.FilesChanged = nil
 		plan.PatchScope.FilesChanged = 0
 		plan.Reason = "Low-confidence fixes produce plans only. AutoCI needs a more exact target before modifying the workflow."
-		return plan, nil
+		return normalizePlan(plan), nil
 	}
 	if options.DryRun {
-		return plan, nil
+		return normalizePlan(plan), nil
 	}
 	if err := createBranch(options.RepoPath, plan.Branch); err != nil {
 		return Plan{}, err
@@ -176,10 +176,22 @@ func Generate(options Options) (Plan, error) {
 		return Plan{}, err
 	}
 	plan.PatchApplied = true
-	return plan, nil
+	return normalizePlan(plan), nil
+}
+
+func normalizePlan(plan Plan) Plan {
+	plan.PatchScope = normalizePatchScope(plan.PatchScope)
+	return plan
+}
+
+func normalizePatchScope(scope PatchScope) PatchScope {
+	scope.JobsTouched = emptyStrings(scope.JobsTouched)
+	scope.StepsTouched = emptyStrings(scope.StepsTouched)
+	return scope
 }
 
 func NewRecord(plan Plan, dryRun bool) Record {
+	plan = normalizePlan(plan)
 	return Record{
 		ID:              "fix-" + trimFixPrefix(plan.ID),
 		SourceItemID:    plan.SourceID,
