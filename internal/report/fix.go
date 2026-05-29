@@ -23,6 +23,7 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 		fmt.Fprintf(w, "Branch: %s\n", plan.Branch)
 	}
 	fmt.Fprintf(w, "Workflow: %s\n", plan.Workflow)
+	fmt.Fprintf(w, "Patch type: %s\n", plan.FixType)
 	if len(plan.Targets) > 0 {
 		fmt.Fprintln(w, "Targets:")
 		for _, target := range plan.Targets {
@@ -44,6 +45,7 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 	fmt.Fprintf(w, "Change: %s\n", plan.ChangeSummary)
 	fmt.Fprintf(w, "Success criteria: %s\n", plan.SuccessCriteria)
 	fmt.Fprintf(w, "Confidence: %s\n", plan.Confidence)
+	fmt.Fprintf(w, "Patch generated: %s\n", yesNo(plan.PatchGenerated))
 	fmt.Fprintf(w, "Patch: %s\n", patchStatus(plan))
 	if !plan.PatchGenerated {
 		fmt.Fprintln(w, "No safe patch generated.")
@@ -66,6 +68,13 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 	for _, command := range plan.Validation {
 		fmt.Fprintf(w, "  %s\n", command)
 	}
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
 }
 
 func patchStatus(plan fix.Plan) string {

@@ -239,9 +239,14 @@ func TestFixRejectsResearchEvidenceThatIsNotReady(t *testing.T) {
 		},
 	})
 
-	err := runFix(t, dir)
-	if err == nil || !strings.Contains(err.Error(), "Readiness: needs_more_evidence") || !strings.Contains(err.Error(), "Exact package or dependency constraint not identified") {
-		t.Fatalf("expected not-ready error, got %v", err)
+	output, err := runFixOutput(t, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Patch type: root_cause", "Patch generated: no", "AutoCI could not find a dependency install command in the targeted job."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -255,6 +260,7 @@ func TestFixJSONReadyForFixEmitsJSONOnly(t *testing.T) {
 		SourceID       string              `json:"sourceId"`
 		Workflow       string              `json:"workflow"`
 		Readiness      lifecycle.Readiness `json:"readiness"`
+		FixType        string              `json:"fixType"`
 		PatchGenerated bool                `json:"patchGenerated"`
 		PatchApplied   bool                `json:"patchApplied"`
 		Reason         string              `json:"reason"`
@@ -267,16 +273,22 @@ func TestFixJSONReadyForFixEmitsJSONOnly(t *testing.T) {
 	if !plan.PatchGenerated || plan.PatchApplied {
 		t.Fatalf("unexpected patch status: %#v", plan)
 	}
+	if plan.FixType != "root_cause" {
+		t.Fatalf("fixType = %q", plan.FixType)
+	}
 }
 
 func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
-	dir := setupNoInstallFixState(t)
+	dir := setupImageNeedsEvidenceFixState(t)
 	writeRawResearchEvidence(t, dir, "failure-theme-image-pull-failure", map[string]any{
 		"id":        "failure-theme-image-pull-failure",
 		"workflow":  "pr.yml",
+		"jobs":      []string{"go-lint"},
 		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
 		"gaps": []map[string]any{
 			{"type": "missing_image", "message": "Exact failing image reference not identified"},
+			{"type": "missing_registry", "message": "Registry host could not be determined from cached evidence"},
+			{"type": "missing_pull_error", "message": "Exact pull error not present in cached evidence"},
 		},
 	})
 
@@ -291,6 +303,7 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 		SourceID       string              `json:"sourceId"`
 		Workflow       string              `json:"workflow"`
 		Readiness      lifecycle.Readiness `json:"readiness"`
+		FixType        string              `json:"fixType"`
 		PatchGenerated bool                `json:"patchGenerated"`
 		PatchApplied   bool                `json:"patchApplied"`
 		Reason         string              `json:"reason"`
@@ -303,25 +316,34 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 			StepsTouched []string `json:"stepsTouched"`
 		} `json:"patchScope"`
 		Validation []string `json:"validation"`
+		Diff       string   `json:"diff"`
 	}
 	assertJSONOnlyAndJQ(t, out.String(), &plan)
 	if plan.SourceID != "failure-theme-image-pull-failure" || plan.Workflow != "pr.yml" || plan.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
 		t.Fatalf("unexpected refusal json: %#v\n%s", plan, out.String())
 	}
-	if plan.PatchGenerated || plan.PatchApplied || plan.Reason != "Cannot generate fix because required evidence is missing." {
-		t.Fatalf("unexpected refusal status: %#v", plan)
+	if !plan.PatchGenerated || plan.PatchApplied || plan.FixType != "instrumentation" {
+		t.Fatalf("unexpected instrumentation status: %#v", plan)
 	}
-	if len(plan.Gaps) != 1 || plan.Gaps[0].Message != "Exact failing image reference not identified" {
+	if len(plan.Gaps) != 3 || plan.Gaps[0].Message != "Exact failing image reference not identified" {
 		t.Fatalf("gaps = %#v", plan.Gaps)
 	}
-	if len(plan.Validation) != 0 {
+	if len(plan.Validation) == 0 {
 		t.Fatalf("validation = %#v", plan.Validation)
 	}
-	if plan.PatchScope.JobsTouched == nil || len(plan.PatchScope.JobsTouched) != 0 {
+	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "go-lint" {
 		t.Fatalf("jobsTouched = %#v", plan.PatchScope.JobsTouched)
 	}
-	if plan.PatchScope.StepsTouched == nil || len(plan.PatchScope.StepsTouched) != 0 {
+	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture container diagnostics" {
 		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
+	}
+	for _, want := range []string{"AutoCI capture container diagnostics", "docker info || true", "docker events --since 30m --until 0s || true"} {
+		if !strings.Contains(plan.Diff, want) {
+			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
+		}
+	}
+	if strings.Contains(plan.Diff, "unrelated-job") {
+		t.Fatalf("instrumentation touched unrelated job:\n%s", plan.Diff)
 	}
 	if strings.Contains(out.String(), `"jobsTouched": null`) || strings.Contains(out.String(), `"stepsTouched": null`) {
 		t.Fatalf("nullable patchScope arrays in output:\n%s", out.String())
@@ -392,6 +414,36 @@ func setupNoInstallFixState(t *testing.T) string {
 		Signature:   "npm install failure",
 		Occurrences: 3,
 		Jobs:        []string{"frontend-unit-test"},
+	}}}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func setupImageNeedsEvidenceFixState(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  go-lint:
+    steps:
+      - run: go test ./...
+  unrelated-job:
+    steps:
+      - run: echo unrelated
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := failures.Analysis{Workflow: "pr.yml", FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-image-pull-failure",
+		Signature:   "image pull failure",
+		Occurrences: 3,
+		Jobs:        []string{"go-lint"},
 	}}}
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
 		t.Fatal(err)

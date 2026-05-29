@@ -56,7 +56,12 @@ func TestTargetedResearchImagePullWithoutImageIsEvidenceSafe(t *testing.T) {
 		t.Fatalf("workflow context = %#v", report.WorkflowContext)
 	}
 	markdown := string(WriteTargetMarkdown(report))
-	for _, want := range []string{"# AutoCI Research Report: failure-theme-image-pull-failure", "Exact failing image reference not identified", "`needs_more_evidence`"} {
+	for _, want := range []string{
+		"# AutoCI Research Report: failure-theme-image-pull-failure",
+		"Exact failing image reference not identified",
+		"Generate an instrumentation patch",
+		"`needs_more_evidence`",
+	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("report missing %q:\n%s", want, markdown)
 		}

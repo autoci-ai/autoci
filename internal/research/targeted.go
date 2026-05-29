@@ -223,9 +223,9 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.Gaps = targetedGaps(report)
 	report.WhatWeDoNotKnowYet = gapMessages(report.Gaps)
 	report.RootCauseHypotheses = targetedHypotheses(report)
+	report.Readiness = targetedReadiness(report)
 	report.RecommendedInvestigation = targetedInvestigation(report)
 	report.CandidateFixes = targetedFixes(report)
-	report.Readiness = targetedReadiness(report)
 	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.Readiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
 	return report
 }
@@ -388,6 +388,9 @@ func targetedHypotheses(report TargetReport) []RootCauseHypothesis {
 }
 
 func targetedInvestigation(report TargetReport) []string {
+	if report.Readiness == lifecycle.ReadinessNeedsMoreEvidence && len(report.Gaps) > 0 {
+		return append([]string{"Generate an instrumentation patch to capture the missing evidence before assigning a root cause."}, targetedEvidenceInvestigation(report)...)
+	}
 	if report.ResearchOpportunity != nil && len(report.ResearchOpportunity.InvestigationSteps) > 0 {
 		return report.ResearchOpportunity.InvestigationSteps
 	}
@@ -404,7 +407,33 @@ func targetedInvestigation(report TargetReport) []string {
 	return []string{"Inspect the cached source command data in evidence.json before assigning a root cause."}
 }
 
+func targetedEvidenceInvestigation(report TargetReport) []string {
+	var steps []string
+	for _, gap := range report.Gaps {
+		switch gap.Type {
+		case "missing_image":
+			steps = append(steps, "Capture the exact image reference emitted by the failing container setup or pull step.")
+		case "missing_registry":
+			steps = append(steps, "Capture Docker registry host and Docker daemon metadata from the affected job.")
+		case "missing_pull_error":
+			steps = append(steps, "Capture the exact Docker/Testcontainers pull error, including timeout, manifest, auth, or rate-limit messages.")
+		case "missing_dependency_error":
+			steps = append(steps, "Capture package-manager stderr from the failing dependency installation step.")
+		case "missing_test_output":
+			steps = append(steps, "Upload failing test logs from the affected job.")
+		default:
+			if gap.Message != "" {
+				steps = append(steps, "Collect evidence for gap: "+gap.Message+".")
+			}
+		}
+	}
+	return uniqueSortedCopy(steps)
+}
+
 func targetedFixes(report TargetReport) []string {
+	if report.Readiness == lifecycle.ReadinessNeedsMoreEvidence && len(report.Gaps) > 0 {
+		return []string{"Generate an instrumentation patch that records the missing evidence; do not apply a root-cause workflow fix yet."}
+	}
 	signature := ""
 	if report.FailureTheme != nil {
 		signature = report.FailureTheme.Signature

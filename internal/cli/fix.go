@@ -79,13 +79,6 @@ func newFixCommand() *cobra.Command {
 						}
 						return fmt.Errorf("research evidence for %s has invalid readiness %q", opportunityID, target.Readiness)
 					}
-					if target.Readiness != lifecycle.ReadinessReadyForFix {
-						gaps = fixGaps(target.Gaps)
-						if format == "json" {
-							return report.WriteFixJSON(cmd.OutOrStdout(), refusalPlan(opportunityID, target.Workflow, target.Readiness, "Cannot generate fix because required evidence is missing.", gaps))
-						}
-						return fmt.Errorf("cannot generate fix.\n\nReadiness: %s\n\nMissing evidence:\n%s", target.Readiness, formatEvidenceGaps(target.Gaps))
-					}
 					candidateSteps = target.CandidateSteps
 					hypotheses = fixHypotheses(target.RootCauseHypotheses)
 					logExcerpts = target.LogExcerpts
@@ -194,6 +187,7 @@ func refusalPlan(sourceID, workflow string, readiness lifecycle.Readiness, reaso
 		SourceID:       sourceID,
 		Workflow:       workflow,
 		Readiness:      readiness,
+		FixType:        fix.RootCauseFix,
 		Confidence:     "low",
 		Reason:         reason,
 		PatchGenerated: false,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/autoci-ai/autoci/internal/lifecycle"
@@ -19,6 +20,7 @@ type Plan struct {
 	Branch          string              `json:"branch,omitempty"`
 	Workflow        string              `json:"workflow"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType         FixType             `json:"fixType"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
 	ChangeSummary   string              `json:"changeSummary"`
@@ -33,7 +35,15 @@ type Plan struct {
 	Validation      []string            `json:"validation"`
 	FilesChanged    []string            `json:"filesChanged,omitempty"`
 	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
+	patchedContent  string
 }
+
+type FixType string
+
+const (
+	RootCauseFix       FixType = "root_cause"
+	InstrumentationFix FixType = "instrumentation"
+)
 
 type Target struct {
 	Workflow string `json:"workflow"`
@@ -86,6 +96,7 @@ type Record struct {
 	Workflow        string              `json:"workflow"`
 	Branch          string              `json:"branch,omitempty"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType         FixType             `json:"fixType"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
 	ChangeSummary   string              `json:"changeSummary"`
@@ -104,6 +115,7 @@ type Record struct {
 type workflowInspection struct {
 	Commands []commandTarget
 	Images   []imageTarget
+	Steps    []jobStepsTarget
 }
 
 type commandTarget struct {
@@ -115,6 +127,13 @@ type commandTarget struct {
 
 type imageTarget struct {
 	Target
+	LineText string
+}
+
+type jobStepsTarget struct {
+	Workflow string
+	Job      string
+	Line     int
 	LineText string
 }
 
@@ -140,6 +159,24 @@ func Generate(options Options) (Plan, error) {
 	}
 	if commands := commandTargetsFromInventory(options.RepoPath, options.WorkflowName, options.Workflow, original); len(commands) > 0 {
 		inspection.Commands = commands
+	}
+
+	if buildInstrumentationPatch(&plan, original, inspection, options) {
+		if options.DryRun {
+			return normalizePlan(plan), nil
+		}
+		if err := createBranch(options.RepoPath, plan.Branch); err != nil {
+			return Plan{}, err
+		}
+		if err := os.WriteFile(options.Workflow.Path, []byte(applyLineDiff(string(original), plan)), 0o644); err != nil {
+			return Plan{}, err
+		}
+		plan.PatchApplied = true
+		return normalizePlan(plan), nil
+	}
+	if options.Readiness == lifecycle.ReadinessNeedsMoreEvidence && plan.FixType == InstrumentationFix && plan.Reason != "" {
+		plan.Validation = diagnosticNextSteps(plan.Workflow)
+		return normalizePlan(plan), nil
 	}
 
 	switch {
@@ -198,6 +235,7 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		Workflow:        plan.Workflow,
 		Branch:          plan.Branch,
 		Readiness:       plan.Readiness,
+		FixType:         plan.FixType,
 		Hypothesis:      plan.Hypothesis,
 		Evidence:        plan.Evidence,
 		ChangeSummary:   plan.ChangeSummary,
@@ -228,6 +266,20 @@ func emptyTargets(values []Target) []Target {
 	return values
 }
 
+func uniqueStringsPreserveOrder(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
 func basePlan(id, sourceID, workflow, evidence string) Plan {
 	if sourceID == "" {
 		sourceID = id
@@ -237,6 +289,7 @@ func basePlan(id, sourceID, workflow, evidence string) Plan {
 		SourceID:   sourceID,
 		Branch:     "autoci/fix-" + trimFixPrefix(id),
 		Workflow:   workflow,
+		FixType:    RootCauseFix,
 		Evidence:   evidence,
 		Confidence: "low",
 		PatchScope: PatchScope{JobsTouched: []string{}, StepsTouched: []string{}},
@@ -401,6 +454,128 @@ func diagnosticNextSteps(workflow string) []string {
 	return []string{fmt.Sprintf("autoci failures --workflow %s --verbose", workflow)}
 }
 
+func buildInstrumentationPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) bool {
+	if options.Readiness != lifecycle.ReadinessNeedsMoreEvidence || len(options.Gaps) == 0 {
+		return false
+	}
+	if isImagePull(plan.SourceID) || isImagePull(plan.ID) || strings.Contains(strings.ToLower(options.Signature), "image pull") {
+		return buildImagePullInstrumentationPatch(plan, original, inspection, options)
+	}
+	return false
+}
+
+func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) bool {
+	sections := filterStepsByJobs(inspection.Steps, options.TargetJobs)
+	if len(options.TargetJobs) == 0 || len(sections) == 0 {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "Readiness is needs_more_evidence, but AutoCI could not find affected workflow jobs where image pull diagnostics can be inserted."
+		return false
+	}
+	if strings.Contains(string(original), "AutoCI capture container diagnostics") {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "The selected workflow already contains the AutoCI container diagnostics step."
+		return false
+	}
+	replacements := map[int]string{}
+	var targets []Target
+	var jobs []string
+	for _, section := range sections {
+		replacement := instrumentationStepsReplacement(section.LineText, imagePullInstrumentationCommands(options.Gaps))
+		if replacement == "" {
+			continue
+		}
+		replacements[section.Line] = replacement
+		jobs = append(jobs, section.Job)
+		targets = append(targets, Target{
+			Workflow: section.Workflow,
+			Job:      section.Job,
+			Step:     "AutoCI capture container diagnostics",
+			Command:  "docker version; docker info; docker images; docker ps -a; docker events",
+			Line:     section.Line,
+		})
+	}
+	if len(replacements) == 0 {
+		plan.FixType = InstrumentationFix
+		plan.Confidence = "low"
+		plan.Reason = "AutoCI found affected jobs but could not produce a targeted diagnostics insertion."
+		return false
+	}
+	patched := applyLineReplacements(string(original), replacements)
+	plan.FixType = InstrumentationFix
+	plan.Confidence = "high"
+	plan.Hypothesis = "The cached evidence is missing the concrete image pull details required for a root-cause fix."
+	plan.ChangeSummary = "Cannot safely generate a root-cause fix. Proposed instrumentation patch: capture image references, registry/Docker environment details, container state, and recent Docker events in the affected job."
+	plan.SuccessCriteria = "The next failed run includes the exact image reference, registry host, pull error, and Docker/Testcontainers diagnostics needed to determine the root cause."
+	plan.Reason = "Readiness is needs_more_evidence; generated instrumentation from gaps: " + gapSummary(options.Gaps) + "."
+	plan.PatchGenerated = true
+	plan.Targets = targets
+	plan.FilesChanged = []string{plan.Workflow}
+	plan.PatchScope = PatchScope{
+		FilesChanged:          1,
+		JobsTouched:           uniqueStringsPreserveOrder(jobs),
+		StepsTouched:          []string{"AutoCI capture container diagnostics"},
+		UnrelatedLinesChanged: 0,
+	}
+	plan.Diff = multiLineDiff(plan.Workflow, string(original), replacements)
+	plan.patchedContent = patched
+	plan.Validation = diagnosticNextSteps(plan.Workflow)
+	return true
+}
+
+func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
+	commands := []string{
+		`echo "::group::AutoCI container diagnostics"`,
+		"docker version || true",
+		"docker info || true",
+	}
+	for _, gap := range gaps {
+		switch gap.Type {
+		case "missing_image":
+			commands = append(commands, "docker images || true")
+		case "missing_registry", "missing_pull_error":
+			commands = append(commands, "docker ps -a || true")
+			commands = append(commands, "docker events --since 30m --until 0s || true")
+		}
+	}
+	commands = append(commands,
+		`env | sort | grep -E '^(DOCKER|TESTCONTAINERS|CI)_' || true`,
+		`echo "::endgroup::"`,
+	)
+	return uniqueStringsPreserveOrder(commands)
+}
+
+func instrumentationStepsReplacement(stepsLine string, commands []string) string {
+	if strings.TrimSpace(stepsLine) != "steps:" || len(commands) == 0 {
+		return ""
+	}
+	indent := stepsLine[:strings.Index(stepsLine, "steps:")]
+	stepIndent := indent + "  "
+	bodyIndent := stepIndent + "  "
+	var lines []string
+	lines = append(lines, stepsLine)
+	lines = append(lines, stepIndent+"- name: AutoCI capture container diagnostics")
+	lines = append(lines, bodyIndent+"run: |")
+	for _, command := range commands {
+		lines = append(lines, bodyIndent+"  "+command)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func gapSummary(gaps []EvidenceGap) string {
+	var values []string
+	for _, gap := range gaps {
+		if gap.Type != "" {
+			values = append(values, gap.Type)
+		}
+	}
+	if len(values) == 0 {
+		return "unspecified evidence gaps"
+	}
+	return strings.Join(values, ", ")
+}
+
 func setSurgicalPatch(plan *Plan, original []byte, line int, oldLine, newLine string, target Target) {
 	if line <= 0 || oldLine == "" || oldLine == newLine {
 		plan.Reason = "AutoCI could not produce a targeted edit without rewriting unrelated workflow content."
@@ -459,10 +634,16 @@ func inspectWorkflow(workflowName string, input []byte) (workflowInspection, err
 	for i := 0; i+1 < len(jobs.Content); i += 2 {
 		job := jobs.Content[i].Value
 		body := jobs.Content[i+1]
-		steps := mappingValue(body, "steps")
+		steps, stepsLine := mappingValueWithKeyLine(body, "steps")
 		if steps == nil || steps.Kind != yaml.SequenceNode {
 			continue
 		}
+		inspection.Steps = append(inspection.Steps, jobStepsTarget{
+			Workflow: workflowName,
+			Job:      job,
+			Line:     stepsLine,
+			LineText: lineAt(lines, stepsLine),
+		})
 		for _, step := range steps.Content {
 			if step.Kind != yaml.MappingNode {
 				continue
@@ -541,6 +722,9 @@ func candidateCommandsFromResearch(steps []stepresolver.CandidateStep, workflowN
 }
 
 func applyLineDiff(original string, plan Plan) string {
+	if plan.patchedContent != "" {
+		return plan.patchedContent
+	}
 	if !plan.PatchGenerated || len(plan.Targets) == 0 {
 		return original
 	}
@@ -564,6 +748,59 @@ func applyLineDiff(original string, plan Plan) string {
 	return strings.Join(lines, "")
 }
 
+func applyLineReplacements(original string, replacements map[int]string) string {
+	if len(replacements) == 0 {
+		return original
+	}
+	lines := strings.SplitAfter(original, "\n")
+	for line, replacement := range replacements {
+		if line <= 0 || line > len(lines) {
+			continue
+		}
+		if !strings.HasSuffix(replacement, "\n") {
+			replacement += "\n"
+		}
+		lines[line-1] = replacement
+	}
+	return strings.Join(lines, "")
+}
+
+func multiLineDiff(path, original string, replacements map[int]string) string {
+	lines := strings.Split(original, "\n")
+	var keys []int
+	for line := range replacements {
+		if line > 0 && line <= len(lines) {
+			keys = append(keys, line)
+		}
+	}
+	sort.Ints(keys)
+	var builder strings.Builder
+	rel := filepath.ToSlash(path)
+	fmt.Fprintf(&builder, "--- %s\n+++ %s\n", rel, rel)
+	for _, line := range keys {
+		start := line - 1
+		if start < 1 {
+			start = 1
+		}
+		end := line + 1
+		if end > len(lines) {
+			end = len(lines)
+		}
+		fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", start, end-start+1, start, end-start+1)
+		for i := start; i <= end; i++ {
+			if i == line {
+				fmt.Fprintf(&builder, "-%s\n", lines[i-1])
+				for _, added := range strings.Split(replacements[line], "\n") {
+					fmt.Fprintf(&builder, "+%s\n", added)
+				}
+				continue
+			}
+			fmt.Fprintf(&builder, " %s\n", lines[i-1])
+		}
+	}
+	return builder.String()
+}
+
 func filterCommandsByJobs(commands []commandTarget, jobs []string) []commandTarget {
 	if len(jobs) == 0 {
 		return commands
@@ -573,6 +810,20 @@ func filterCommandsByJobs(commands []commandTarget, jobs []string) []commandTarg
 	for _, command := range commands {
 		if allowed[command.Job] {
 			result = append(result, command)
+		}
+	}
+	return result
+}
+
+func filterStepsByJobs(steps []jobStepsTarget, jobs []string) []jobStepsTarget {
+	if len(jobs) == 0 {
+		return nil
+	}
+	allowed := stringSet(jobs)
+	var result []jobStepsTarget
+	for _, step := range steps {
+		if allowed[step.Job] {
+			result = append(result, step)
 		}
 	}
 	return result
@@ -744,15 +995,20 @@ func looksLikeImageReference(value string) bool {
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	value, _ := mappingValueWithKeyLine(node, key)
+	return value
+}
+
+func mappingValueWithKeyLine(node *yaml.Node, key string) (*yaml.Node, int) {
 	if node == nil || node.Kind != yaml.MappingNode {
-		return nil
+		return nil, 0
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		if node.Content[i].Value == key {
-			return node.Content[i+1]
+			return node.Content[i+1], node.Content[i].Line
 		}
 	}
-	return nil
+	return nil, 0
 }
 
 func lineAt(lines []string, line int) string {
