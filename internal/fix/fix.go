@@ -1,7 +1,6 @@
 package fix
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,17 +12,39 @@ import (
 )
 
 type Plan struct {
-	ID              string   `json:"id"`
-	Branch          string   `json:"branch"`
-	Workflow        string   `json:"workflow"`
-	Hypothesis      string   `json:"hypothesis"`
-	Evidence        string   `json:"evidence"`
-	ChangeSummary   string   `json:"changeSummary"`
-	SuccessCriteria string   `json:"successCriteria"`
-	Confidence      string   `json:"confidence"`
-	Diff            string   `json:"diff,omitempty"`
-	Validation      []string `json:"validation"`
-	FilesChanged    []string `json:"filesChanged,omitempty"`
+	ID              string     `json:"id"`
+	SourceID        string     `json:"sourceId"`
+	Branch          string     `json:"branch,omitempty"`
+	Workflow        string     `json:"workflow"`
+	Hypothesis      string     `json:"hypothesis"`
+	Evidence        string     `json:"evidence"`
+	ChangeSummary   string     `json:"changeSummary"`
+	SuccessCriteria string     `json:"successCriteria"`
+	Confidence      string     `json:"confidence"`
+	Reason          string     `json:"reason,omitempty"`
+	PatchGenerated  bool       `json:"patchGenerated"`
+	PatchApplied    bool       `json:"patchApplied"`
+	Targets         []Target   `json:"targets,omitempty"`
+	PatchScope      PatchScope `json:"patchScope"`
+	Diff            string     `json:"diff,omitempty"`
+	Validation      []string   `json:"validation"`
+	FilesChanged    []string   `json:"filesChanged,omitempty"`
+}
+
+type Target struct {
+	Workflow string `json:"workflow"`
+	Job      string `json:"job,omitempty"`
+	Step     string `json:"step,omitempty"`
+	Command  string `json:"command,omitempty"`
+	Image    string `json:"image,omitempty"`
+	Line     int    `json:"line,omitempty"`
+}
+
+type PatchScope struct {
+	FilesChanged          int      `json:"filesChanged"`
+	JobsTouched           []string `json:"jobsTouched"`
+	StepsTouched          []string `json:"stepsTouched"`
+	UnrelatedLinesChanged int      `json:"unrelatedLinesChanged"`
 }
 
 type Options struct {
@@ -33,57 +54,105 @@ type Options struct {
 	Opportunity  string
 	DryRun       bool
 	Evidence     string
+	TargetJobs   []string
+	Occurrences  int
+	Signature    string
+}
+
+type Record struct {
+	ID              string     `json:"id"`
+	SourceItemID    string     `json:"sourceItemId"`
+	Workflow        string     `json:"workflow"`
+	Branch          string     `json:"branch,omitempty"`
+	Hypothesis      string     `json:"hypothesis"`
+	Evidence        string     `json:"evidence"`
+	ChangeSummary   string     `json:"changeSummary"`
+	SuccessCriteria string     `json:"successCriteria"`
+	Confidence      string     `json:"confidence"`
+	Reason          string     `json:"reason,omitempty"`
+	PatchGenerated  bool       `json:"patchGenerated"`
+	PatchApplied    bool       `json:"patchApplied"`
+	Targets         []Target   `json:"targets,omitempty"`
+	PatchScope      PatchScope `json:"patchScope"`
+	FilesChanged    []string   `json:"filesChanged"`
+	DryRun          bool       `json:"dryRun"`
+}
+
+type workflowInspection struct {
+	Commands []commandTarget
+	Images   []imageTarget
+}
+
+type commandTarget struct {
+	Target
+	LineText string
+}
+
+type imageTarget struct {
+	Target
+	LineText string
 }
 
 func Generate(options Options) (Plan, error) {
-	id := normalizeOpportunity(options.Opportunity)
+	sourceID := strings.TrimSpace(options.Opportunity)
+	id := normalizeOpportunity(sourceID)
 	if id == "" {
 		id = "failure-theme-image-pull-failure"
 	}
-	plan := basePlan(id, options.WorkflowName, options.Evidence)
-	plan.FilesChanged = []string{options.Workflow.Path}
+	plan := basePlan(id, sourceID, options.WorkflowName, options.Evidence)
+
 	original, err := os.ReadFile(options.Workflow.Path)
 	if err != nil {
 		return Plan{}, err
 	}
-	updated, err := applyWorkflowFix(original, id)
+	inspection, err := inspectWorkflow(options.WorkflowName, original)
 	if err != nil {
-		return Plan{}, err
+		plan.Confidence = "low"
+		plan.Reason = "AutoCI could not parse the workflow well enough to prove a target-safe edit."
+		return plan, nil
 	}
-	if bytes.Equal(original, updated) {
-		return Plan{}, fmt.Errorf("no safe workflow modification found for %q", id)
+
+	switch {
+	case isImagePull(id):
+		planImagePull(&plan, inspection, options)
+	case isDependencyInstall(id):
+		buildDependencyInstallPatch(&plan, original, inspection, options)
+	case isLintInstability(id):
+		buildLintPatch(&plan, original, inspection, options)
+	default:
+		plan.Confidence = "low"
+		plan.Reason = "No surgical fix generator is available for the selected opportunity."
 	}
-	plan.Diff = unifiedDiff(options.Workflow.Path, original, updated)
+
+	if !plan.PatchGenerated {
+		plan.Validation = diagnosticNextSteps(plan.Workflow)
+		return plan, nil
+	}
+	if plan.Confidence == "low" {
+		plan.PatchGenerated = false
+		plan.Diff = ""
+		plan.FilesChanged = nil
+		plan.PatchScope.FilesChanged = 0
+		plan.Reason = "Low-confidence fixes produce plans only. AutoCI needs a more exact target before modifying the workflow."
+		return plan, nil
+	}
 	if options.DryRun {
 		return plan, nil
 	}
 	if err := createBranch(options.RepoPath, plan.Branch); err != nil {
 		return Plan{}, err
 	}
-	if err := os.WriteFile(options.Workflow.Path, updated, 0o644); err != nil {
+	if err := os.WriteFile(options.Workflow.Path, []byte(applyLineDiff(string(original), plan)), 0o644); err != nil {
 		return Plan{}, err
 	}
+	plan.PatchApplied = true
 	return plan, nil
-}
-
-type Record struct {
-	ID              string   `json:"id"`
-	SourceItemID    string   `json:"sourceItemId"`
-	Workflow        string   `json:"workflow"`
-	Branch          string   `json:"branch"`
-	Hypothesis      string   `json:"hypothesis"`
-	Evidence        string   `json:"evidence"`
-	ChangeSummary   string   `json:"changeSummary"`
-	SuccessCriteria string   `json:"successCriteria"`
-	Confidence      string   `json:"confidence"`
-	FilesChanged    []string `json:"filesChanged"`
-	DryRun          bool     `json:"dryRun"`
 }
 
 func NewRecord(plan Plan, dryRun bool) Record {
 	return Record{
 		ID:              "fix-" + trimFixPrefix(plan.ID),
-		SourceItemID:    plan.ID,
+		SourceItemID:    plan.SourceID,
 		Workflow:        plan.Workflow,
 		Branch:          plan.Branch,
 		Hypothesis:      plan.Hypothesis,
@@ -91,157 +160,333 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		ChangeSummary:   plan.ChangeSummary,
 		SuccessCriteria: plan.SuccessCriteria,
 		Confidence:      plan.Confidence,
+		Reason:          plan.Reason,
+		PatchGenerated:  plan.PatchGenerated,
+		PatchApplied:    plan.PatchApplied,
+		Targets:         plan.Targets,
+		PatchScope:      plan.PatchScope,
 		FilesChanged:    plan.FilesChanged,
 		DryRun:          dryRun,
 	}
 }
 
-func basePlan(id, workflow, evidence string) Plan {
+func basePlan(id, sourceID, workflow, evidence string) Plan {
+	if sourceID == "" {
+		sourceID = id
+	}
 	plan := Plan{
-		ID:         id,
-		Branch:     "autoci/fix-" + trimFixPrefix(strings.TrimPrefix(id, "failure-theme-")),
+		ID:         "fix-" + trimFixPrefix(id),
+		SourceID:   sourceID,
+		Branch:     "autoci/fix-" + trimFixPrefix(id),
 		Workflow:   workflow,
 		Evidence:   evidence,
-		Confidence: "medium",
+		Confidence: "low",
+		PatchScope: PatchScope{JobsTouched: []string{}, StepsTouched: []string{}},
 		Validation: []string{"autoci validate --allow-depot-run"},
 	}
 	switch {
-	case strings.Contains(id, "image-pull"):
-		plan.Hypothesis = "Image pull failures are caused by registry latency, network instability, or mutable remote image availability."
-		plan.ChangeSummary = "Added Docker client timeout defaults to make image pulls more tolerant of slow registry responses."
+	case isImagePull(id):
+		plan.Hypothesis = "Image pull failures are caused by registry latency, network instability, mutable image tags, or missing image pinning."
+		plan.ChangeSummary = "No workflow edit has been selected yet."
 		plan.SuccessCriteria = "Image pull failures no longer recur in future workflow runs."
-	case strings.Contains(id, "npm-install"):
-		plan.Hypothesis = "Dependency install failures are caused by transient registry or network failures."
-		plan.ChangeSummary = "Wrapped npm install commands with bounded retry logic."
-		plan.SuccessCriteria = "npm install failures no longer recur without increasing workflow failure rate."
-	case strings.Contains(id, "flaky-job") || strings.Contains(id, "go-lint") || strings.Contains(id, "golangci-lint"):
-		plan.Hypothesis = "Lint instability is caused by transient execution or dependency setup failures."
-		plan.ChangeSummary = "Wrapped golangci-lint execution with bounded retry logic where present."
+	case isDependencyInstall(id):
+		plan.Hypothesis = "Dependency install failures are caused by transient package registry, lockfile, or cache behavior in the affected job."
+		plan.ChangeSummary = "Patch the affected package-manager install command only when AutoCI can prove the target job and command."
+		plan.SuccessCriteria = "Dependency install failures no longer recur without increasing workflow failure rate."
+	case isLintInstability(id):
+		plan.Hypothesis = "Lint instability is caused by transient execution or dependency setup failures in the affected lint job."
+		plan.ChangeSummary = "Patch the affected lint command only when AutoCI can prove the target job and command."
 		plan.SuccessCriteria = "The lint job failure rate falls below 2% or the root cause is identified."
 	default:
 		plan.Hypothesis = "The selected opportunity points to a measurable CI improvement."
-		plan.ChangeSummary = "Applied the safest available workflow hardening for this opportunity."
-		plan.SuccessCriteria = "The targeted failure mode no longer recurs in future workflow runs."
-		plan.Confidence = "low"
+		plan.ChangeSummary = "No safe surgical patch has been selected."
+		plan.SuccessCriteria = "The selected issue is explained by evidence or a targeted patch is generated later."
 	}
 	if plan.Evidence == "" {
-		plan.Evidence = "Selected opportunity: " + id
+		plan.Evidence = "Selected opportunity: " + sourceID
 	}
 	return plan
 }
 
-func applyWorkflowFix(input []byte, id string) ([]byte, error) {
+func planImagePull(plan *Plan, inspection workflowInspection, options Options) {
+	images := filterImagesByJobs(inspection.Images, options.TargetJobs)
+	if len(images) == 0 {
+		images = inspection.Images
+	}
+	for _, image := range images {
+		plan.Targets = append(plan.Targets, image.Target)
+	}
+	plan.Confidence = "low"
+	if len(images) == 0 {
+		plan.Reason = "AutoCI detected image pull failures but could not identify exact image references in the selected workflow."
+		return
+	}
+	plan.Reason = "AutoCI detected image pull failures but cannot safely resolve or pin the exact image references automatically."
+	plan.ChangeSummary = "Patch not generated. Candidate image references should be pinned manually to immutable digests or known versions."
+}
+
+func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) {
+	if options.Occurrences == 1 {
+		refuseSingleOccurrence(plan)
+		return
+	}
+	if len(options.TargetJobs) == 0 {
+		plan.Reason = "The selected opportunity did not identify a target job, so AutoCI cannot prove which install command should change."
+		return
+	}
+	candidates := filterCommandsByJobs(inspection.Commands, options.TargetJobs)
+	candidates = filterCommands(candidates, isDependencyInstallCommand)
+	for _, candidate := range candidates {
+		plan.Targets = append(plan.Targets, candidate.Target)
+	}
+	if len(candidates) == 0 {
+		plan.Reason = "AutoCI could not find a dependency install command in the targeted job."
+		return
+	}
+	if len(candidates) > 1 {
+		plan.Reason = "Multiple dependency install commands matched the selected opportunity; refusing to guess which one caused the failure."
+		return
+	}
+	candidate := candidates[0]
+	if !signatureMatchesPackageManager(options.Signature, candidate.Command) {
+		plan.Reason = fmt.Sprintf("Failure signature %q does not match targeted command %q.", options.Signature, candidate.Command)
+		return
+	}
+	updated := retryCommand(candidate.Command)
+	if updated == candidate.Command {
+		plan.Reason = "The targeted command already appears to be wrapped or cannot be safely rewritten."
+		return
+	}
+	plan.Confidence = "medium"
+	plan.ChangeSummary = fmt.Sprintf("Wrap only `%s` in the `%s` job with bounded retry logic.", candidate.Command, candidate.Job)
+	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, strings.Replace(candidate.LineText, candidate.Command, updated, 1), candidate.Target)
+}
+
+func buildLintPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) {
+	if options.Occurrences == 1 {
+		refuseSingleOccurrence(plan)
+		return
+	}
+	if len(options.TargetJobs) == 0 {
+		plan.Reason = "The selected opportunity did not identify a target job, so AutoCI cannot prove which lint command should change."
+		return
+	}
+	candidates := filterCommandsByJobs(inspection.Commands, options.TargetJobs)
+	candidates = filterCommands(candidates, func(command string) bool {
+		return strings.Contains(command, "golangci-lint")
+	})
+	for _, candidate := range candidates {
+		plan.Targets = append(plan.Targets, candidate.Target)
+	}
+	if len(candidates) != 1 {
+		plan.Reason = "AutoCI could not identify exactly one lint command in the targeted job."
+		return
+	}
+	candidate := candidates[0]
+	updated := retryCommand(candidate.Command)
+	plan.Confidence = "medium"
+	plan.ChangeSummary = fmt.Sprintf("Wrap only `%s` in the `%s` job with bounded retry logic.", candidate.Command, candidate.Job)
+	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, strings.Replace(candidate.LineText, candidate.Command, updated, 1), candidate.Target)
+}
+
+func refuseSingleOccurrence(plan *Plan) {
+	plan.Confidence = "low"
+	plan.Reason = "This failure theme has only 1 occurrence. AutoCI needs more evidence before modifying the workflow."
+	plan.Validation = diagnosticNextSteps(plan.Workflow)
+}
+
+func diagnosticNextSteps(workflow string) []string {
+	return []string{fmt.Sprintf("autoci failures --workflow %s --verbose", workflow)}
+}
+
+func setSurgicalPatch(plan *Plan, original []byte, line int, oldLine, newLine string, target Target) {
+	if line <= 0 || oldLine == "" || oldLine == newLine {
+		plan.Reason = "AutoCI could not produce a targeted edit without rewriting unrelated workflow content."
+		return
+	}
+	plan.Targets = []Target{target}
+	plan.PatchGenerated = true
+	plan.FilesChanged = []string{plan.Workflow}
+	plan.PatchScope = PatchScope{
+		FilesChanged:          1,
+		JobsTouched:           []string{target.Job},
+		StepsTouched:          []string{target.Command},
+		UnrelatedLinesChanged: 0,
+	}
+	plan.Diff = lineDiff(plan.Workflow, string(original), line, oldLine, newLine)
+}
+
+func inspectWorkflow(workflowName string, input []byte) (workflowInspection, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(input, &root); err != nil {
-		return nil, err
+		return workflowInspection{}, err
 	}
 	if len(root.Content) == 0 {
-		return nil, fmt.Errorf("workflow is empty")
+		return workflowInspection{}, fmt.Errorf("workflow is empty")
 	}
+	lines := strings.Split(string(input), "\n")
 	doc := root.Content[0]
-	changed := false
-	switch {
-	case strings.Contains(id, "image-pull"):
-		changed = ensureEnv(doc, "DOCKER_CLIENT_TIMEOUT", "300") || changed
-		changed = ensureEnv(doc, "COMPOSE_HTTP_TIMEOUT", "300") || changed
-	case strings.Contains(id, "npm-install"):
-		changed = rewriteRunScalars(doc, isNPMInstallLine) || changed
-	case strings.Contains(id, "flaky-job") || strings.Contains(id, "go-lint") || strings.Contains(id, "golangci-lint"):
-		changed = rewriteRunScalars(doc, isGolangCILintLine) || changed
-	default:
-		return nil, fmt.Errorf("no fix generator available for %q", id)
+	jobs := mappingValue(doc, "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
+		return workflowInspection{}, nil
 	}
-	if !changed {
-		return input, nil
-	}
-	var out bytes.Buffer
-	encoder := yaml.NewEncoder(&out)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(&root); err != nil {
-		return nil, err
-	}
-	if err := encoder.Close(); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
-}
-
-func ensureEnv(doc *yaml.Node, key, value string) bool {
-	if doc.Kind != yaml.MappingNode {
-		return false
-	}
-	env := mappingValue(doc, "env")
-	if env == nil {
-		envKey := &yaml.Node{Kind: yaml.ScalarNode, Value: "env"}
-		env = &yaml.Node{Kind: yaml.MappingNode}
-		doc.Content = append(doc.Content, envKey, env)
-	}
-	if env.Kind != yaml.MappingNode {
-		return false
-	}
-	if existing := mappingValue(env, key); existing != nil {
-		return false
-	}
-	env.Content = append(env.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: value, Tag: "!!str"},
-	)
-	return true
-}
-
-func rewriteRunScalars(node *yaml.Node, match func(string) bool) bool {
-	changed := false
-	if node.Kind == yaml.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			if node.Content[i].Value == "run" && node.Content[i+1].Kind == yaml.ScalarNode {
-				updated, ok := wrapMatchingLines(node.Content[i+1].Value, match)
-				if ok {
-					node.Content[i+1].Value = updated
-					node.Content[i+1].Style = yaml.LiteralStyle
-					changed = true
+	var inspection workflowInspection
+	for i := 0; i+1 < len(jobs.Content); i += 2 {
+		job := jobs.Content[i].Value
+		body := jobs.Content[i+1]
+		steps := mappingValue(body, "steps")
+		if steps == nil || steps.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, step := range steps.Content {
+			if step.Kind != yaml.MappingNode {
+				continue
+			}
+			if run := mappingValue(step, "run"); run != nil && run.Kind == yaml.ScalarNode {
+				command := strings.TrimSpace(run.Value)
+				if isSingleLine(command) {
+					lineText := lineAt(lines, run.Line)
+					inspection.Commands = append(inspection.Commands, commandTarget{
+						Target:   Target{Workflow: workflowName, Job: job, Step: command, Command: command, Line: run.Line},
+						LineText: lineText,
+					})
 				}
 			}
-			if rewriteRunScalars(node.Content[i+1], match) {
-				changed = true
+			for _, key := range []string{"uses", "image"} {
+				if value := mappingValue(step, key); value != nil && value.Kind == yaml.ScalarNode {
+					ref := strings.TrimSpace(value.Value)
+					if looksLikeImageReference(ref) {
+						inspection.Images = append(inspection.Images, imageTarget{
+							Target:   Target{Workflow: workflowName, Job: job, Step: ref, Image: ref, Line: value.Line},
+							LineText: lineAt(lines, value.Line),
+						})
+					}
+				}
 			}
 		}
-		return changed
 	}
-	for _, child := range node.Content {
-		if rewriteRunScalars(child, match) {
-			changed = true
+	return inspection, nil
+}
+
+func applyLineDiff(original string, plan Plan) string {
+	if !plan.PatchGenerated || len(plan.Targets) == 0 {
+		return original
+	}
+	lines := strings.SplitAfter(original, "\n")
+	targetLine := plan.Targets[0].Line
+	if targetLine <= 0 || targetLine > len(lines) {
+		return original
+	}
+	for _, line := range strings.Split(plan.Diff, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			lines[targetLine-1] = strings.TrimPrefix(line, "+")
+			if !strings.HasSuffix(lines[targetLine-1], "\n") {
+				lines[targetLine-1] += "\n"
+			}
 		}
 	}
-	return changed
+	return strings.Join(lines, "")
 }
 
-func wrapMatchingLines(script string, match func(string) bool) (string, bool) {
-	if strings.Contains(script, "autoci_retry()") {
-		return script, false
+func filterCommandsByJobs(commands []commandTarget, jobs []string) []commandTarget {
+	if len(jobs) == 0 {
+		return commands
 	}
-	lines := strings.Split(script, "\n")
-	changed := false
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if match(trimmed) {
-			prefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			lines[i] = prefix + "autoci_retry " + trimmed
-			changed = true
+	allowed := stringSet(jobs)
+	var result []commandTarget
+	for _, command := range commands {
+		if allowed[command.Job] {
+			result = append(result, command)
 		}
 	}
-	if !changed {
-		return script, false
+	return result
+}
+
+func filterImagesByJobs(images []imageTarget, jobs []string) []imageTarget {
+	if len(jobs) == 0 {
+		return images
 	}
-	header := "autoci_retry() {\n  n=0\n  until \"$@\"; do\n    n=$((n+1))\n    if [ \"$n\" -ge 3 ]; then\n      return 1\n    fi\n    sleep $((n * 5))\n  done\n}\n"
-	return header + strings.Join(lines, "\n"), true
+	allowed := stringSet(jobs)
+	var result []imageTarget
+	for _, image := range images {
+		if allowed[image.Job] {
+			result = append(result, image)
+		}
+	}
+	return result
 }
 
-func isNPMInstallLine(line string) bool {
-	return strings.HasPrefix(line, "npm ci") || strings.HasPrefix(line, "npm install")
+func filterCommands(commands []commandTarget, match func(string) bool) []commandTarget {
+	var result []commandTarget
+	for _, command := range commands {
+		if match(command.Command) {
+			result = append(result, command)
+		}
+	}
+	return result
 }
 
-func isGolangCILintLine(line string) bool {
-	return strings.Contains(line, "golangci-lint")
+func retryCommand(command string) string {
+	if strings.Contains(command, "autoci_retry") || strings.Contains(command, "until ") {
+		return command
+	}
+	escaped := strings.ReplaceAll(command, `"`, `\"`)
+	return fmt.Sprintf(`n=0; until %s; do n=$((n+1)); [ "$n" -ge 3 ] && exit 1; sleep $((n * 5)); done`, escaped)
+}
+
+func isDependencyInstallCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	return strings.HasPrefix(command, "npm ci") ||
+		strings.HasPrefix(command, "npm install") ||
+		strings.HasPrefix(command, "yarn install") ||
+		strings.HasPrefix(command, "pnpm install") ||
+		strings.HasPrefix(command, "go mod download")
+}
+
+func signatureMatchesPackageManager(signature, command string) bool {
+	signature = strings.ToLower(signature)
+	command = strings.ToLower(command)
+	switch {
+	case signature == "" || strings.Contains(signature, "dependency install"):
+		return true
+	case strings.Contains(signature, "npm"):
+		return strings.HasPrefix(command, "npm ")
+	case strings.Contains(signature, "yarn"):
+		return strings.HasPrefix(command, "yarn ")
+	case strings.Contains(signature, "pnpm"):
+		return strings.HasPrefix(command, "pnpm ")
+	case strings.Contains(signature, "go mod"):
+		return strings.HasPrefix(command, "go mod download")
+	case strings.Contains(signature, "install failure"):
+		return isDependencyInstallCommand(command)
+	default:
+		return true
+	}
+}
+
+func isImagePull(id string) bool {
+	return strings.Contains(id, "image-pull")
+}
+
+func isDependencyInstall(id string) bool {
+	return strings.Contains(id, "npm-install") || strings.Contains(id, "dependency-install") || strings.Contains(id, "yarn-install") || strings.Contains(id, "pnpm-install")
+}
+
+func isLintInstability(id string) bool {
+	return strings.Contains(id, "flaky-job") || strings.Contains(id, "go-lint") || strings.Contains(id, "golangci-lint")
+}
+
+func isSingleLine(value string) bool {
+	return value != "" && !strings.Contains(value, "\n")
+}
+
+func looksLikeImageReference(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.HasPrefix(lower, "docker://") ||
+		strings.Contains(lower, ".pkg.dev/") ||
+		strings.Contains(lower, ".amazonaws.com/") ||
+		strings.Contains(lower, "ghcr.io/") ||
+		strings.Contains(lower, "docker.io/")
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {
@@ -254,6 +499,39 @@ func mappingValue(node *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+func lineAt(lines []string, line int) string {
+	if line <= 0 || line > len(lines) {
+		return ""
+	}
+	return lines[line-1]
+}
+
+func lineDiff(path, original string, line int, oldLine, newLine string) string {
+	lines := strings.Split(original, "\n")
+	start := line - 3
+	if start < 1 {
+		start = 1
+	}
+	end := line + 3
+	if end > len(lines) {
+		end = len(lines)
+	}
+	var builder strings.Builder
+	rel := filepath.ToSlash(path)
+	fmt.Fprintf(&builder, "--- %s\n+++ %s\n", rel, rel)
+	fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", start, end-start+1, start, end-start+1)
+	for i := start; i <= end; i++ {
+		switch i {
+		case line:
+			fmt.Fprintf(&builder, "-%s\n", oldLine)
+			fmt.Fprintf(&builder, "+%s\n", newLine)
+		default:
+			fmt.Fprintf(&builder, " %s\n", lines[i-1])
+		}
+	}
+	return builder.String()
 }
 
 func createBranch(repoPath, branch string) error {
@@ -274,22 +552,6 @@ func createBranch(repoPath, branch string) error {
 	return nil
 }
 
-func unifiedDiff(path string, original, updated []byte) string {
-	oldLines := strings.Split(strings.TrimRight(string(original), "\n"), "\n")
-	newLines := strings.Split(strings.TrimRight(string(updated), "\n"), "\n")
-	var builder strings.Builder
-	rel := filepath.ToSlash(path)
-	fmt.Fprintf(&builder, "--- %s\n+++ %s\n", rel, rel)
-	fmt.Fprintln(&builder, "@@")
-	for _, line := range oldLines {
-		fmt.Fprintf(&builder, "-%s\n", line)
-	}
-	for _, line := range newLines {
-		fmt.Fprintf(&builder, "+%s\n", line)
-	}
-	return builder.String()
-}
-
 func normalizeOpportunity(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.TrimPrefix(value, "research-")
@@ -305,8 +567,19 @@ func normalizeOpportunity(value string) string {
 
 func trimFixPrefix(value string) string {
 	value = strings.TrimPrefix(value, "fix-")
+	value = strings.TrimPrefix(value, "failure-theme-")
 	value = strings.TrimPrefix(value, "theme-")
 	return slug(value)
+}
+
+func stringSet(values []string) map[string]bool {
+	result := map[string]bool{}
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			result[value] = true
+		}
+	}
+	return result
 }
 
 func slug(value string) string {
@@ -324,5 +597,9 @@ func slug(value string) string {
 			lastDash = true
 		}
 	}
-	return strings.Trim(builder.String(), "-")
+	result := strings.Trim(builder.String(), "-")
+	if result == "" {
+		return "selected-opportunity"
+	}
+	return result
 }

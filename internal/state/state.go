@@ -20,9 +20,12 @@ type Snapshot struct {
 }
 
 type StoredItem struct {
-	ID       string
-	Evidence string
-	Source   string
+	ID          string
+	Evidence    string
+	Source      string
+	Jobs        []string
+	Occurrences int
+	Signature   string
 }
 
 func Write(repoPath, command, workflow string, data any) error {
@@ -147,16 +150,43 @@ func findInArray(source string, value any, id string) (StoredItem, bool) {
 	}
 	for _, item := range items {
 		object, ok := item.(map[string]any)
-		if !ok || stringValue(object["id"]) != id {
+		if !ok || !idsMatch(stringValue(object["id"]), id) {
 			continue
 		}
 		evidence := stringValue(object["evidence"])
 		if evidence == "" {
 			evidence = stringValue(object["signature"])
 		}
-		return StoredItem{ID: id, Evidence: evidence, Source: source}, true
+		jobs := stringSlice(object["jobs"])
+		if job := stringValue(object["job"]); job != "" {
+			jobs = append(jobs, job)
+		}
+		return StoredItem{
+			ID:          id,
+			Evidence:    evidence,
+			Source:      source,
+			Jobs:        jobs,
+			Occurrences: intValue(object["occurrences"]),
+			Signature:   stringValue(object["signature"]),
+		}, true
 	}
 	return StoredItem{}, false
+}
+
+func idsMatch(stored, requested string) bool {
+	if stored == requested {
+		return true
+	}
+	return normalizeItemID(stored) == normalizeItemID(requested)
+}
+
+func normalizeItemID(id string) string {
+	id = strings.TrimPrefix(id, "research-")
+	id = strings.TrimPrefix(id, "reliability-")
+	if strings.HasPrefix(id, "failure-theme-") {
+		id = strings.TrimPrefix(id, "failure-theme-")
+	}
+	return id
 }
 
 func extractID(data any) string {
@@ -179,6 +209,31 @@ func stringValue(value any) string {
 		return str
 	}
 	return ""
+}
+
+func stringSlice(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var result []string
+	for _, item := range items {
+		if str := stringValue(item); str != "" {
+			result = append(result, str)
+		}
+	}
+	return result
+}
+
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case float64:
+		return int(typed)
+	case int:
+		return typed
+	default:
+		return 0
+	}
 }
 
 func slug(value string) string {

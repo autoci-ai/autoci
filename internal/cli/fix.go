@@ -37,6 +37,9 @@ func newFixCommand() *cobra.Command {
 			workflowName := scanner.WorkflowName(cfg.Path, workflow)
 			opportunityID := viper.GetString("fix-id")
 			evidence := ""
+			var targetJobs []string
+			occurrences := 0
+			signature := ""
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -46,6 +49,9 @@ func newFixCommand() *cobra.Command {
 			if opportunityID != "" {
 				if item, ok := state.FindItem(cfg.Path, workflowName, opportunityID); ok {
 					evidence = item.Evidence
+					targetJobs = item.Jobs
+					occurrences = item.Occurrences
+					signature = item.Signature
 				} else {
 					evidence = "Selected opportunity: " + opportunityID
 				}
@@ -66,6 +72,9 @@ func newFixCommand() *cobra.Command {
 				theme := analysis.FailureThemes[0]
 				opportunityID = theme.ID
 				evidence = fmt.Sprintf("%d occurrences of %s across %d jobs.", theme.Occurrences, theme.Signature, len(theme.Jobs))
+				targetJobs = theme.Jobs
+				occurrences = theme.Occurrences
+				signature = theme.Signature
 			}
 
 			plan, err := fix.Generate(fix.Options{
@@ -75,6 +84,9 @@ func newFixCommand() *cobra.Command {
 				Opportunity:  opportunityID,
 				DryRun:       dryRun,
 				Evidence:     evidence,
+				TargetJobs:   targetJobs,
+				Occurrences:  occurrences,
+				Signature:    signature,
 			})
 			if err != nil {
 				return err
