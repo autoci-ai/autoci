@@ -586,6 +586,10 @@ func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
 		}
 	}
 	var hypotheses []RootCauseHypothesis
+	if hasSnykIntegrityEvidence(raw) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Snyk package install is failing during binary download or integrity verification in %s.", jobs), Confidence: 82, Evidence: snykIntegrityEvidence(raw)})
+		return limitHypotheses(hypotheses, 5)
+	}
 	if hasNPMResolutionEvidence(raw) {
 		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s with explicit resolver or peer-dependency conflict evidence.", packages), Confidence: 78, Evidence: matchingEvidence(raw, npmResolutionEvidenceTokens())})
 	}
@@ -658,8 +662,13 @@ func npmInvestigationSteps(raw RawEvidence) []string {
 		steps = append(steps, "Compare those failed install logs with successful runs before assigning a lockfile, package, registry, or cache root cause.")
 		return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
 	}
-	for _, module := range raw.Modules {
-		steps = append(steps, fmt.Sprintf("Inspect dependency resolution for %s in affected jobs %s.", module, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
+	if hasSnykIntegrityEvidence(raw) {
+		steps = append(steps, fmt.Sprintf("Inspect Snyk install output in %s for binary download URL, actual checksum, and expected checksum.", joinOrFallback(raw.Jobs, "the affected jobs")))
+	}
+	if hasNPMResolutionEvidence(raw) {
+		for _, module := range raw.Modules {
+			steps = append(steps, fmt.Sprintf("Inspect dependency resolution for %s in affected jobs %s.", module, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
+		}
 	}
 	for _, url := range raw.URLs {
 		steps = append(steps, fmt.Sprintf("Check whether failed installs correlate with registry access to %s.", url))
@@ -684,7 +693,25 @@ func hasImageRootCauseEvidence(raw RawEvidence) bool {
 }
 
 func hasNPMRootCauseEvidence(raw RawEvidence) bool {
-	return hasNPMResolutionEvidence(raw) || hasAnyEvidenceToken(raw, []string{"lockfile would have been modified", "immutable install", "econnreset", "etimedout", "timeout", "eai_again", "enotfound"})
+	return hasSnykIntegrityEvidence(raw) || hasNPMResolutionEvidence(raw) || hasAnyEvidenceToken(raw, []string{"lockfile would have been modified", "immutable install", "econnreset", "etimedout", "timeout", "eai_again", "enotfound"})
+}
+
+func hasSnykIntegrityEvidence(raw RawEvidence) bool {
+	joined := strings.ToLower(strings.Join(raw.LogExcerpts, "\n"))
+	return (strings.Contains(joined, "snyk@npm") || strings.Contains(joined, "snyk-linux")) &&
+		strings.Contains(joined, "actual:") &&
+		strings.Contains(joined, "expected:")
+}
+
+func snykIntegrityEvidence(raw RawEvidence) []string {
+	var result []string
+	for _, line := range raw.LogExcerpts {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "snyk") || strings.Contains(lower, "actual:") || strings.Contains(lower, "expected:") {
+			result = append(result, line)
+		}
+	}
+	return limitStrings(uniqueSorted(result), 4)
 }
 
 func hasNPMResolutionEvidence(raw RawEvidence) bool {

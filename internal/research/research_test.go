@@ -324,6 +324,35 @@ func TestNPMResolutionMarkersAllowResolutionHypothesis(t *testing.T) {
 	}
 }
 
+func TestSnykHashMismatchClassifiesAsBinaryIntegrity(t *testing.T) {
+	failureAnalysis := &failures.Analysis{FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 3,
+		Jobs:        []string{"frontend-unit-test"},
+		Artifacts: failures.FailureArtifacts{
+			Packages: []string{"snyk", "core-js", "esbuild", "msw", "protobufjs"},
+			URLs:     []string{"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
+		},
+		Evidence: []failures.FailureEvidence{
+			{Job: "frontend-unit-test", LogExcerpt: "Corepack is about to download https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
+			{Job: "frontend-unit-test", PackageName: "snyk", LogExcerpt: "snyk@npm:1.1302.1 STDERR - actual: abc123"},
+			{Job: "frontend-unit-test", PackageName: "snyk", LogExcerpt: "snyk@npm:1.1302.1 STDERR - expected: def456"},
+		},
+	}}}
+
+	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
+	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.Hypotheses[0].Evidence, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	if !strings.Contains(opportunity.Hypothesis, "Snyk package install is failing during binary download or integrity verification") {
+		t.Fatalf("expected Snyk binary integrity hypothesis, got %q", opportunity.Hypothesis)
+	}
+	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "Inspect dependency resolution for core-js", "Inspect dependency resolution for esbuild", "Inspect dependency resolution for msw", "Inspect dependency resolution for protobufjs"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("Snyk integrity evidence produced resolver claim %q: %s", forbidden, combined)
+		}
+	}
+}
+
 func containsResearchString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
