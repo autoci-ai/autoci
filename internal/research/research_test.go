@@ -63,6 +63,19 @@ func TestFromProfileAndFailuresPrioritizesFailureThemes(t *testing.T) {
 			Signature:   "image pull failure",
 			Occurrences: 6,
 			Jobs:        []string{"go-lint", "integration-test:matrix-03"},
+			Artifacts: failures.FailureArtifacts{
+				Images: []string{"softwaremill/elasticmq:1.4.5"},
+				Hosts:  []string{"docker.io"},
+			},
+			Evidence: []failures.FailureEvidence{{
+				RunID:        "run-1",
+				Job:          "go-lint",
+				Image:        "softwaremill/elasticmq:1.4.5",
+				Registry:     "docker.io",
+				RegistryHost: "docker.io",
+				PullError:    "manifest unknown",
+				LogExcerpt:   "failed to pull image softwaremill/elasticmq:1.4.5: manifest unknown",
+			}},
 		}},
 	}
 
@@ -78,6 +91,21 @@ func TestFromProfileAndFailuresPrioritizesFailureThemes(t *testing.T) {
 	}
 	if !strings.Contains(plan.Opportunities[0].Evidence, "6 occurrences across 2 jobs") {
 		t.Fatalf("unexpected evidence: %s", plan.Opportunities[0].Evidence)
+	}
+	if len(plan.Opportunities[0].RawEvidence.Images) != 1 || plan.Opportunities[0].RawEvidence.Images[0] != "softwaremill/elasticmq:1.4.5" {
+		t.Fatalf("raw evidence = %#v", plan.Opportunities[0].RawEvidence)
+	}
+	if len(plan.Opportunities[0].WhyWeBelieveThis) == 0 || !strings.Contains(strings.Join(plan.Opportunities[0].WhyWeBelieveThis, "\n"), "docker.io") {
+		t.Fatalf("why = %#v", plan.Opportunities[0].WhyWeBelieveThis)
+	}
+	if len(plan.Opportunities[0].Hypotheses) < 2 || plan.Opportunities[0].Hypotheses[0].Confidence == 0 {
+		t.Fatalf("hypotheses = %#v", plan.Opportunities[0].Hypotheses)
+	}
+	if !strings.Contains(strings.Join(plan.Opportunities[0].InvestigationSteps, "\n"), "softwaremill/elasticmq:1.4.5") {
+		t.Fatalf("steps = %#v", plan.Opportunities[0].InvestigationSteps)
+	}
+	if len(plan.Opportunities[0].SupportingArtifacts) == 0 {
+		t.Fatalf("supporting artifacts = %#v", plan.Opportunities[0].SupportingArtifacts)
 	}
 }
 

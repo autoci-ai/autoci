@@ -30,16 +30,45 @@ type TopRecommendation struct {
 }
 
 type ResearchOpportunity struct {
-	ID                string   `json:"id"`
-	Category          string   `json:"category"`
-	Title             string   `json:"title"`
-	Hypothesis        string   `json:"hypothesis"`
-	Evidence          string   `json:"evidence"`
-	Experiment        string   `json:"experiment"`
-	SuccessCriteria   string   `json:"successCriteria"`
-	Risk              string   `json:"risk"`
-	EstimatedImpact   string   `json:"estimatedImpact"`
-	SuggestedCommands []string `json:"suggestedCommands"`
+	ID                  string                `json:"id"`
+	Category            string                `json:"category"`
+	Title               string                `json:"title"`
+	Hypothesis          string                `json:"hypothesis"`
+	Evidence            string                `json:"evidence"`
+	RawEvidence         RawEvidence           `json:"rawEvidence,omitempty"`
+	WhyWeBelieveThis    []string              `json:"whyWeBelieveThis,omitempty"`
+	Hypotheses          []RootCauseHypothesis `json:"hypotheses,omitempty"`
+	InvestigationSteps  []string              `json:"investigationSteps,omitempty"`
+	SupportingArtifacts []SupportingArtifact  `json:"supportingArtifacts,omitempty"`
+	Experiment          string                `json:"experiment"`
+	SuccessCriteria     string                `json:"successCriteria"`
+	Risk                string                `json:"risk"`
+	EstimatedImpact     string                `json:"estimatedImpact"`
+	SuggestedCommands   []string              `json:"suggestedCommands"`
+}
+
+type RawEvidence struct {
+	FailureThemeIDs []string `json:"failureThemeIds,omitempty"`
+	Workflows       []string `json:"workflows,omitempty"`
+	Jobs            []string `json:"jobs,omitempty"`
+	Images          []string `json:"images,omitempty"`
+	Registries      []string `json:"registries,omitempty"`
+	Actions         []string `json:"actions,omitempty"`
+	Modules         []string `json:"modules,omitempty"`
+	URLs            []string `json:"urls,omitempty"`
+	Hosts           []string `json:"hosts,omitempty"`
+	LogExcerpts     []string `json:"logExcerpts,omitempty"`
+}
+
+type RootCauseHypothesis struct {
+	Summary    string   `json:"summary"`
+	Confidence int      `json:"confidence"`
+	Evidence   []string `json:"evidence,omitempty"`
+}
+
+type SupportingArtifact struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 type scoredOpportunity struct {
@@ -62,6 +91,9 @@ func FromProfileWithOptions(workflowName string, runtimeProfile *profile.Profile
 	}
 
 	backlog := buildBacklog(workflowName, runtimeProfile.Findings)
+	for i := range backlog {
+		backlog[i].opportunity = ensureResearchBrief(workflowName, backlog[i].opportunity)
+	}
 	sort.SliceStable(backlog, func(i, j int) bool {
 		return backlog[i].score > backlog[j].score
 	})
@@ -99,6 +131,7 @@ func FromSources(workflowName string, runtimeProfile *profile.Profile, failureAn
 	opportunities := uniqueOpportunities(plan.Opportunities)
 	scored := make([]scoredOpportunity, 0, len(opportunities))
 	for _, opportunity := range opportunities {
+		opportunity = ensureResearchBrief(workflowName, opportunity)
 		scored = append(scored, scoredOpportunity{opportunity: opportunity, score: opportunityScore(opportunity)})
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
@@ -274,17 +307,27 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 }
 
 func opportunityFromFailureTheme(workflowName string, theme failures.FailureTheme) ResearchOpportunity {
+	raw := rawEvidenceFromFailureTheme(workflowName, theme)
+	why := whyForFailureTheme(theme, raw)
+	hypotheses := hypothesesForFailureTheme(theme, raw)
+	steps := investigationStepsForFailureTheme(theme, raw)
+	artifacts := supportingArtifacts(raw)
 	return ResearchOpportunity{
-		ID:                "reliability-" + strings.TrimPrefix(theme.ID, "failure-theme-"),
-		Category:          "Reliability",
-		Title:             "Investigate " + failureThemeTitle(theme.Signature),
-		Hypothesis:        "A recurring infrastructure or dependency failure theme is causing multiple job failures.",
-		Evidence:          failureThemeEvidence(theme),
-		Experiment:        experimentForFailureTheme(theme),
-		SuccessCriteria:   "The failure theme no longer recurs in recent failed runs or the root cause is identified.",
-		Risk:              "Low",
-		EstimatedImpact:   "Reduces repeated CI failures caused by the same root cause.",
-		SuggestedCommands: suggestedCommands(workflowName),
+		ID:                  "reliability-" + strings.TrimPrefix(theme.ID, "failure-theme-"),
+		Category:            "Reliability",
+		Title:               "Investigate " + failureThemeTitle(theme.Signature),
+		Hypothesis:          primaryHypothesis(hypotheses, "A recurring failure pattern has concrete shared evidence across failed runs."),
+		Evidence:            failureThemeEvidence(theme),
+		RawEvidence:         raw,
+		WhyWeBelieveThis:    why,
+		Hypotheses:          hypotheses,
+		InvestigationSteps:  steps,
+		SupportingArtifacts: artifacts,
+		Experiment:          experimentForFailureTheme(theme),
+		SuccessCriteria:     "The failure theme no longer recurs in recent failed runs or the root cause is identified.",
+		Risk:                "Low",
+		EstimatedImpact:     "Reduces repeated CI failures caused by the same root cause.",
+		SuggestedCommands:   steps,
 	}
 }
 
@@ -355,12 +398,374 @@ func failureThemeEvidence(theme failures.FailureTheme) string {
 func experimentForFailureTheme(theme failures.FailureTheme) string {
 	switch theme.Signature {
 	case "image pull failure", "image pull timeout":
-		return "Compare affected jobs, image sources, registry behavior, cache behavior, and image pinning strategy."
+		return "Compare failed and successful runs for the affected image references, registries, and jobs to isolate whether registry access, mutable tags, or pull policy changed."
 	case "npm install failure":
-		return "Compare dependency install logs across failed runs and inspect registry availability, lockfile changes, and cache behavior."
+		return "Compare dependency install logs across failed and successful runs using the affected packages, registry URLs, and jobs as the join keys."
 	default:
-		return "Compare affected jobs and failed-run logs to identify the shared root cause."
+		return "Compare affected jobs and failed-run evidence to identify the shared root cause before changing workflow behavior."
 	}
+}
+
+func ensureResearchBrief(workflowName string, opportunity ResearchOpportunity) ResearchOpportunity {
+	if len(opportunity.RawEvidence.Workflows) == 0 {
+		opportunity.RawEvidence.Workflows = []string{workflowName}
+	}
+	if len(opportunity.RawEvidence.Jobs) == 0 {
+		opportunity.RawEvidence.Jobs = jobsFromEvidenceText(opportunity.Evidence)
+	}
+	if opportunity.RawEvidence.LogExcerpts == nil && opportunity.Evidence != "" {
+		opportunity.RawEvidence.LogExcerpts = []string{opportunity.Evidence}
+	}
+	if len(opportunity.WhyWeBelieveThis) == 0 && opportunity.Evidence != "" {
+		opportunity.WhyWeBelieveThis = []string{opportunity.Evidence}
+	}
+	if len(opportunity.Hypotheses) == 0 {
+		opportunity.Hypotheses = []RootCauseHypothesis{{
+			Summary:    opportunity.Hypothesis,
+			Confidence: confidenceForOpportunity(opportunity),
+			Evidence:   compactStrings([]string{opportunity.Evidence}),
+		}}
+	}
+	if len(opportunity.Hypotheses) == 1 {
+		opportunity.Hypotheses = append(opportunity.Hypotheses, RootCauseHypothesis{
+			Summary:    "The same evidence may instead reflect a correlated CI environment condition rather than a defect in the named job.",
+			Confidence: maxInt(20, opportunity.Hypotheses[0].Confidence-25),
+			Evidence:   compactStrings([]string{opportunity.Evidence}),
+		})
+	}
+	if len(opportunity.InvestigationSteps) == 0 {
+		opportunity.InvestigationSteps = investigationStepsForOpportunity(opportunity)
+	}
+	if len(opportunity.SupportingArtifacts) == 0 {
+		opportunity.SupportingArtifacts = supportingArtifacts(opportunity.RawEvidence)
+	}
+	opportunity.SuggestedCommands = opportunity.InvestigationSteps
+	return opportunity
+}
+
+func rawEvidenceFromFailureTheme(workflowName string, theme failures.FailureTheme) RawEvidence {
+	raw := RawEvidence{
+		FailureThemeIDs: []string{theme.ID},
+		Workflows:       []string{workflowName},
+		Jobs:            theme.Jobs,
+	}
+	for _, evidence := range theme.Evidence {
+		raw.Images = append(raw.Images, evidence.Image)
+		raw.Registries = append(raw.Registries, evidence.Registry, evidence.RegistryHost)
+		raw.Modules = append(raw.Modules, evidence.SourceFile, evidence.MissingDependency, evidence.PackageName)
+		raw.URLs = append(raw.URLs, evidence.RegistryURL)
+		raw.Hosts = append(raw.Hosts, evidence.RegistryHost)
+		raw.LogExcerpts = append(raw.LogExcerpts, evidence.LogExcerpt, evidence.PullError, evidence.InstallError, evidence.DependencyConflict, evidence.CompilerError, evidence.AssertionMessage)
+	}
+	raw.Images = append(raw.Images, theme.Artifacts.Images...)
+	raw.Modules = append(raw.Modules, theme.Artifacts.Modules...)
+	raw.Modules = append(raw.Modules, theme.Artifacts.Packages...)
+	raw.URLs = append(raw.URLs, theme.Artifacts.URLs...)
+	raw.Hosts = append(raw.Hosts, theme.Artifacts.Hosts...)
+	raw.Actions = actionsFromArtifacts(theme)
+	raw.FailureThemeIDs = uniqueSorted(raw.FailureThemeIDs)
+	raw.Workflows = uniqueSorted(raw.Workflows)
+	raw.Jobs = uniqueSorted(raw.Jobs)
+	raw.Images = uniqueSorted(raw.Images)
+	raw.Registries = uniqueSorted(raw.Registries)
+	raw.Actions = uniqueSorted(raw.Actions)
+	raw.Modules = uniqueSorted(raw.Modules)
+	raw.URLs = uniqueSorted(raw.URLs)
+	raw.Hosts = uniqueSorted(raw.Hosts)
+	raw.LogExcerpts = uniqueSorted(raw.LogExcerpts)
+	return raw
+}
+
+func whyForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []string {
+	var reasons []string
+	reasons = append(reasons, fmt.Sprintf("%s appears %d times under stable ID %s.", theme.Signature, theme.Occurrences, theme.ID))
+	if len(raw.Jobs) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Affected jobs: %s.", strings.Join(raw.Jobs, ", ")))
+	}
+	if len(raw.Images) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Failure evidence names container image(s): %s.", strings.Join(raw.Images, ", ")))
+	}
+	if len(raw.Registries) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Pull evidence points at registry host(s): %s.", strings.Join(raw.Registries, ", ")))
+	}
+	if len(raw.Modules) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Recurring module/package/source evidence: %s.", strings.Join(raw.Modules, ", ")))
+	}
+	if len(raw.URLs) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Relevant URL evidence: %s.", strings.Join(raw.URLs, ", ")))
+	}
+	if len(raw.LogExcerpts) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Representative log evidence: %s.", strings.Join(limitStrings(raw.LogExcerpts, 3), " | ")))
+	}
+	return reasons
+}
+
+func hypothesesForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []RootCauseHypothesis {
+	switch theme.Signature {
+	case "image pull failure", "image pull timeout":
+		return imagePullHypotheses(raw)
+	case "npm install failure":
+		return npmHypotheses(raw)
+	case "test failure", "jest timeout":
+		return testHypotheses(raw)
+	case "build failure":
+		return buildHypotheses(raw)
+	default:
+		return []RootCauseHypothesis{
+			{Summary: "The affected jobs share a recurring external dependency or environment condition.", Confidence: 55, Evidence: failureEvidenceSnippets(raw)},
+			{Summary: "The failure signature groups unrelated symptoms that need a narrower signature.", Confidence: 35, Evidence: failureEvidenceSnippets(raw)},
+		}
+	}
+}
+
+func imagePullHypotheses(raw RawEvidence) []RootCauseHypothesis {
+	images := joinOrFallback(raw.Images, "the referenced images")
+	registries := joinOrFallback(raw.Registries, joinOrFallback(raw.Hosts, "the registry"))
+	return []RootCauseHypothesis{
+		{Summary: fmt.Sprintf("%s pulls are failing because %s is unavailable, rate-limited, or intermittently unreachable from CI.", images, registries), Confidence: confidenceWithEvidence(80, raw.Registries), Evidence: failureEvidenceSnippets(raw)},
+		{Summary: fmt.Sprintf("Mutable or missing tags on %s are producing manifest lookup failures.", images), Confidence: confidenceWithEvidence(70, raw.Images), Evidence: matchingEvidence(raw, []string{"manifest", "not found", "unknown"})},
+		{Summary: fmt.Sprintf("The workflow depends on public registry pulls for %s instead of an internal mirror or pinned digest.", images), Confidence: confidenceWithEvidence(60, raw.Images), Evidence: append(raw.Images, raw.Registries...)},
+	}
+}
+
+func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
+	packages := joinOrFallback(raw.Modules, "the affected package set")
+	registry := joinOrFallback(raw.URLs, joinOrFallback(raw.Hosts, "the package registry"))
+	return []RootCauseHypothesis{
+		{Summary: fmt.Sprintf("Dependency resolution is failing for %s because the lockfile and package peer constraints disagree.", packages), Confidence: confidenceWithEvidence(78, matchingEvidence(raw, []string{"eresolve", "peer"})), Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})},
+		{Summary: fmt.Sprintf("Install failures correlate with access to %s.", registry), Confidence: confidenceWithEvidence(68, raw.URLs), Evidence: append(raw.URLs, failureEvidenceSnippets(raw)...)},
+		{Summary: fmt.Sprintf("The affected job is using stale dependency cache or lockfile state for %s.", packages), Confidence: 50, Evidence: raw.Modules},
+	}
+}
+
+func testHypotheses(raw RawEvidence) []RootCauseHypothesis {
+	modules := joinOrFallback(raw.Modules, "the failing test/module")
+	return []RootCauseHypothesis{
+		{Summary: fmt.Sprintf("%s has a deterministic assertion failure introduced by recent code or dependency changes.", modules), Confidence: confidenceWithEvidence(72, matchingEvidence(raw, []string{"assert", "expected", "received"})), Evidence: failureEvidenceSnippets(raw)},
+		{Summary: fmt.Sprintf("%s is flaky due to timing, shared state, or external service behavior.", modules), Confidence: 52, Evidence: raw.LogExcerpts},
+	}
+}
+
+func buildHypotheses(raw RawEvidence) []RootCauseHypothesis {
+	modules := joinOrFallback(raw.Modules, "the affected source/module")
+	return []RootCauseHypothesis{
+		{Summary: fmt.Sprintf("%s is failing compilation because a symbol, package, or generated artifact is missing.", modules), Confidence: confidenceWithEvidence(75, matchingEvidence(raw, []string{"undefined", "cannot find", "missing", "module not found"})), Evidence: failureEvidenceSnippets(raw)},
+		{Summary: "The build target is running with different dependency or generation steps than the successful path.", Confidence: 55, Evidence: append(raw.Modules, raw.LogExcerpts...)},
+	}
+}
+
+func investigationStepsForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []string {
+	switch theme.Signature {
+	case "image pull failure", "image pull timeout":
+		return imagePullInvestigationSteps(raw)
+	case "npm install failure":
+		return npmInvestigationSteps(raw)
+	case "test failure", "jest timeout":
+		return testInvestigationSteps(raw)
+	case "build failure":
+		return buildInvestigationSteps(raw)
+	default:
+		return investigationStepsForRaw(raw)
+	}
+}
+
+func imagePullInvestigationSteps(raw RawEvidence) []string {
+	var steps []string
+	for _, image := range raw.Images {
+		steps = append(steps, fmt.Sprintf("Check failed pulls for %s in jobs %s.", image, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
+	}
+	for _, registry := range raw.Registries {
+		steps = append(steps, fmt.Sprintf("Compare failed runs against successful runs to see whether failures correlate with %s access.", registry))
+	}
+	for _, image := range raw.Images {
+		steps = append(steps, fmt.Sprintf("Evaluate mirroring or pinning %s to an internal registry or immutable digest.", image))
+	}
+	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+}
+
+func npmInvestigationSteps(raw RawEvidence) []string {
+	var steps []string
+	for _, module := range raw.Modules {
+		steps = append(steps, fmt.Sprintf("Inspect dependency resolution for %s in affected jobs %s.", module, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
+	}
+	for _, url := range raw.URLs {
+		steps = append(steps, fmt.Sprintf("Check whether failed installs correlate with registry access to %s.", url))
+	}
+	steps = append(steps, "Compare package lockfile and dependency cache state between failed and successful runs for the affected jobs.")
+	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+}
+
+func testInvestigationSteps(raw RawEvidence) []string {
+	var steps []string
+	for _, module := range raw.Modules {
+		steps = append(steps, fmt.Sprintf("Compare failed and successful logs for %s to separate deterministic assertions from timing or shared-state failures.", module))
+	}
+	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+}
+
+func buildInvestigationSteps(raw RawEvidence) []string {
+	var steps []string
+	for _, module := range raw.Modules {
+		steps = append(steps, fmt.Sprintf("Trace build inputs for %s in the affected jobs and verify generated files or dependency steps ran before compilation.", module))
+	}
+	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+}
+
+func investigationStepsForOpportunity(opportunity ResearchOpportunity) []string {
+	raw := opportunity.RawEvidence
+	if len(raw.Jobs) > 0 {
+		return []string{fmt.Sprintf("Compare recent runs for %s in workflow %s using this evidence: %s", strings.Join(raw.Jobs, ", "), joinOrFallback(raw.Workflows, "the selected workflow"), opportunity.Evidence)}
+	}
+	return []string{fmt.Sprintf("Inspect the cached evidence for %s and compare failed versus successful runs before choosing a workflow change.", opportunity.ID)}
+}
+
+func investigationStepsForRaw(raw RawEvidence) []string {
+	var steps []string
+	if len(raw.Jobs) > 0 {
+		steps = append(steps, fmt.Sprintf("Use affected jobs as the first filter: %s.", strings.Join(raw.Jobs, ", ")))
+	}
+	if len(raw.FailureThemeIDs) > 0 {
+		steps = append(steps, fmt.Sprintf("Anchor the investigation on cached failure theme ID(s): %s.", strings.Join(raw.FailureThemeIDs, ", ")))
+	}
+	return steps
+}
+
+func supportingArtifacts(raw RawEvidence) []SupportingArtifact {
+	var artifacts []SupportingArtifact
+	for _, value := range raw.FailureThemeIDs {
+		artifacts = append(artifacts, SupportingArtifact{Type: "failureThemeId", Value: value})
+	}
+	for _, value := range raw.Jobs {
+		artifacts = append(artifacts, SupportingArtifact{Type: "job", Value: value})
+	}
+	for _, value := range raw.Workflows {
+		artifacts = append(artifacts, SupportingArtifact{Type: "workflow", Value: value})
+	}
+	for _, value := range raw.Images {
+		artifacts = append(artifacts, SupportingArtifact{Type: "image", Value: value})
+	}
+	for _, value := range raw.Registries {
+		artifacts = append(artifacts, SupportingArtifact{Type: "registry", Value: value})
+	}
+	for _, value := range raw.Actions {
+		artifacts = append(artifacts, SupportingArtifact{Type: "action", Value: value})
+	}
+	for _, value := range raw.Modules {
+		artifacts = append(artifacts, SupportingArtifact{Type: "module", Value: value})
+	}
+	for _, value := range raw.URLs {
+		artifacts = append(artifacts, SupportingArtifact{Type: "url", Value: value})
+	}
+	for _, value := range raw.Hosts {
+		artifacts = append(artifacts, SupportingArtifact{Type: "host", Value: value})
+	}
+	return artifacts
+}
+
+func primaryHypothesis(hypotheses []RootCauseHypothesis, fallback string) string {
+	if len(hypotheses) == 0 || hypotheses[0].Summary == "" {
+		return fallback
+	}
+	return hypotheses[0].Summary
+}
+
+func confidenceForOpportunity(opportunity ResearchOpportunity) int {
+	switch {
+	case strings.HasPrefix(opportunity.ID, "reliability-"):
+		return 65
+	case strings.HasPrefix(opportunity.ID, "performance-"):
+		return 60
+	default:
+		return 50
+	}
+}
+
+func confidenceWithEvidence(base int, evidence []string) int {
+	if len(compactStrings(evidence)) == 0 {
+		return base - 20
+	}
+	return base
+}
+
+func failureEvidenceSnippets(raw RawEvidence) []string {
+	return limitStrings(raw.LogExcerpts, 4)
+}
+
+func matchingEvidence(raw RawEvidence, terms []string) []string {
+	var result []string
+	for _, value := range raw.LogExcerpts {
+		lower := strings.ToLower(value)
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				result = append(result, value)
+				break
+			}
+		}
+	}
+	return limitStrings(uniqueSorted(result), 4)
+}
+
+func actionsFromArtifacts(theme failures.FailureTheme) []string {
+	var result []string
+	for _, image := range theme.Artifacts.Images {
+		if strings.Contains(image, "action") || strings.Contains(image, "actions/") {
+			result = append(result, image)
+		}
+	}
+	return result
+}
+
+func jobsFromEvidenceText(evidence string) []string {
+	if evidence == "" || !strings.Contains(evidence, ":") {
+		return nil
+	}
+	prefix := strings.SplitN(evidence, ":", 2)[0]
+	if strings.Contains(prefix, "occurrence") {
+		return nil
+	}
+	return compactStrings([]string{strings.TrimSpace(prefix)})
+}
+
+func joinOrFallback(values []string, fallback string) string {
+	values = compactStrings(values)
+	if len(values) == 0 {
+		return fallback
+	}
+	return strings.Join(values, ", ")
+}
+
+func limitStrings(values []string, limit int) []string {
+	values = compactStrings(values)
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
+func compactStrings(values []string) []string {
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	return uniqueSorted(result)
+}
+
+func uniqueSorted(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func opportunityScore(opportunity ResearchOpportunity) int {
@@ -484,6 +889,13 @@ func slug(value string) string {
 
 func minInt(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

@@ -41,13 +41,16 @@ func writeResearchOpportunityGroups(w io.Writer, opportunities []research.Resear
 			fmt.Fprintf(w, "ID: %s\n", opportunity.ID)
 			fmt.Fprintf(w, "Hypothesis: %s\n", opportunity.Hypothesis)
 			fmt.Fprintf(w, "Evidence: %s\n", opportunity.Evidence)
+			writeResearchBriefTerminal(w, opportunity)
 			fmt.Fprintf(w, "Experiment: %s\n", opportunity.Experiment)
 			fmt.Fprintf(w, "Success criteria: %s\n", opportunity.SuccessCriteria)
 			fmt.Fprintf(w, "Risk: %s\n", opportunity.Risk)
 			fmt.Fprintf(w, "Estimated impact: %s\n", opportunity.EstimatedImpact)
-			fmt.Fprintln(w, "Suggested commands:")
-			for _, command := range opportunity.SuggestedCommands {
-				fmt.Fprintf(w, "- %s\n", command)
+			if len(opportunity.InvestigationSteps) == 0 {
+				fmt.Fprintln(w, "Suggested commands:")
+				for _, command := range opportunity.SuggestedCommands {
+					fmt.Fprintf(w, "- %s\n", command)
+				}
 			}
 		}
 	}
@@ -95,17 +98,125 @@ func writeResearchMarkdownGroups(w io.Writer, opportunities []research.ResearchO
 			fmt.Fprintf(w, "- Category: `%s`\n", opportunity.Category)
 			fmt.Fprintf(w, "- Hypothesis: %s\n", opportunity.Hypothesis)
 			fmt.Fprintf(w, "- Evidence: %s\n", opportunity.Evidence)
+			writeResearchBriefMarkdown(w, opportunity)
 			fmt.Fprintf(w, "- Experiment: %s\n", opportunity.Experiment)
 			fmt.Fprintf(w, "- Success criteria: %s\n", opportunity.SuccessCriteria)
 			fmt.Fprintf(w, "- Risk: %s\n", opportunity.Risk)
 			fmt.Fprintf(w, "- Estimated impact: %s\n", opportunity.EstimatedImpact)
-			fmt.Fprintln(w, "- Suggested commands:")
-			for _, command := range opportunity.SuggestedCommands {
-				fmt.Fprintf(w, "  - `%s`\n", command)
+			if len(opportunity.InvestigationSteps) == 0 {
+				fmt.Fprintln(w, "- Suggested commands:")
+				for _, command := range opportunity.SuggestedCommands {
+					fmt.Fprintf(w, "  - `%s`\n", command)
+				}
 			}
 			fmt.Fprintln(w)
 		}
 	}
+}
+
+func writeResearchBriefTerminal(w io.Writer, opportunity research.ResearchOpportunity) {
+	if lines := rawEvidenceLines(opportunity.RawEvidence); len(lines) > 0 {
+		fmt.Fprintln(w, "Raw evidence:")
+		for _, line := range lines {
+			fmt.Fprintf(w, "- %s\n", line)
+		}
+	}
+	if len(opportunity.WhyWeBelieveThis) > 0 {
+		fmt.Fprintln(w, "Why we believe this:")
+		for _, reason := range opportunity.WhyWeBelieveThis {
+			fmt.Fprintf(w, "- %s\n", reason)
+		}
+	}
+	if len(opportunity.Hypotheses) > 0 {
+		fmt.Fprintln(w, "Root cause hypotheses:")
+		for _, hypothesis := range opportunity.Hypotheses {
+			fmt.Fprintf(w, "- [%d%%] %s\n", hypothesis.Confidence, hypothesis.Summary)
+		}
+	}
+	if len(opportunity.InvestigationSteps) > 0 {
+		fmt.Fprintln(w, "Investigation steps:")
+		for _, step := range opportunity.InvestigationSteps {
+			fmt.Fprintf(w, "- %s\n", step)
+		}
+	}
+	if len(opportunity.SupportingArtifacts) > 0 {
+		fmt.Fprintln(w, "Supporting artifacts:")
+		for _, artifact := range opportunity.SupportingArtifacts {
+			fmt.Fprintf(w, "- %s: %s\n", artifact.Type, artifact.Value)
+		}
+	}
+}
+
+func writeResearchBriefMarkdown(w io.Writer, opportunity research.ResearchOpportunity) {
+	if lines := rawEvidenceLines(opportunity.RawEvidence); len(lines) > 0 {
+		fmt.Fprintln(w, "- Raw evidence:")
+		for _, line := range lines {
+			fmt.Fprintf(w, "  - %s\n", line)
+		}
+	}
+	if len(opportunity.WhyWeBelieveThis) > 0 {
+		fmt.Fprintln(w, "- Why we believe this:")
+		for _, reason := range opportunity.WhyWeBelieveThis {
+			fmt.Fprintf(w, "  - %s\n", reason)
+		}
+	}
+	if len(opportunity.Hypotheses) > 0 {
+		fmt.Fprintln(w, "- Root cause hypotheses:")
+		for _, hypothesis := range opportunity.Hypotheses {
+			fmt.Fprintf(w, "  - `%d%%` %s\n", hypothesis.Confidence, hypothesis.Summary)
+		}
+	}
+	if len(opportunity.InvestigationSteps) > 0 {
+		fmt.Fprintln(w, "- Investigation steps:")
+		for _, step := range opportunity.InvestigationSteps {
+			fmt.Fprintf(w, "  - %s\n", step)
+		}
+	}
+	if len(opportunity.SupportingArtifacts) > 0 {
+		fmt.Fprintln(w, "- Supporting artifacts:")
+		for _, artifact := range opportunity.SupportingArtifacts {
+			fmt.Fprintf(w, "  - `%s`: `%s`\n", artifact.Type, artifact.Value)
+		}
+	}
+}
+
+func rawEvidenceLines(raw research.RawEvidence) []string {
+	var lines []string
+	addRawEvidenceLine := func(label string, values []string) {
+		if len(values) == 0 {
+			return
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", label, joinResearchValues(values)))
+	}
+	addRawEvidenceLine("failure themes", raw.FailureThemeIDs)
+	addRawEvidenceLine("workflows", raw.Workflows)
+	addRawEvidenceLine("jobs", raw.Jobs)
+	addRawEvidenceLine("images", raw.Images)
+	addRawEvidenceLine("registries", raw.Registries)
+	addRawEvidenceLine("actions", raw.Actions)
+	addRawEvidenceLine("modules", raw.Modules)
+	addRawEvidenceLine("URLs", raw.URLs)
+	addRawEvidenceLine("hosts", raw.Hosts)
+	addRawEvidenceLine("log excerpts", limitResearchValues(raw.LogExcerpts, 3))
+	return lines
+}
+
+func joinResearchValues(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	result := values[0]
+	for _, value := range values[1:] {
+		result += ", " + value
+	}
+	return result
+}
+
+func limitResearchValues(values []string, limit int) []string {
+	if len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
 
 func WriteResearchJSON(w io.Writer, plan research.Plan) error {
