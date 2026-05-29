@@ -139,10 +139,8 @@ func TestNPMResearchDoesNotClaimReferencedPackagesWhenEvidenceIsEmpty(t *testing
 			t.Fatalf("bad package %q leaked into package evidence: %#v", bad, opportunity)
 		}
 	}
-	for _, want := range []string{"core-js", "pact-core", "unrs-resolver", "msw", "protobufjs", "snyk", "esbuild"} {
-		if !containsResearchString(opportunity.RawEvidence.Modules, want) {
-			t.Fatalf("missing clean package %q in %#v", want, opportunity.RawEvidence.Modules)
-		}
+	if len(opportunity.RawEvidence.Modules) != 0 {
+		t.Fatalf("expected no package evidence from broad cached artifacts, got %#v", opportunity.RawEvidence.Modules)
 	}
 	if !strings.Contains(strings.Join(opportunity.RawEvidence.URLs, "\n"), "repo.yarnpkg.com") {
 		t.Fatalf("expected URL evidence, got %#v", opportunity.RawEvidence.URLs)
@@ -332,7 +330,7 @@ func TestSnykHashMismatchClassifiesAsBinaryIntegrity(t *testing.T) {
 		Jobs:        []string{"frontend-unit-test"},
 		Artifacts: failures.FailureArtifacts{
 			Packages: []string{"snyk", "core-js", "esbuild", "msw", "protobufjs"},
-			URLs:     []string{"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
+			URLs:     []string{"https://downloads.snyk.io/cli/v1.1302.1/snyk-linux"},
 		},
 		Evidence: []failures.FailureEvidence{
 			{Job: "frontend-unit-test", LogExcerpt: "Corepack is about to download https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
@@ -342,11 +340,17 @@ func TestSnykHashMismatchClassifiesAsBinaryIntegrity(t *testing.T) {
 	}}}
 
 	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
-	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.Hypotheses[0].Evidence, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.Hypotheses[0].Evidence, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n") + "\n" + strings.Join(opportunity.RawEvidence.Modules, "\n") + "\n" + strings.Join(opportunity.RawEvidence.URLs, "\n")
 	if !strings.Contains(opportunity.Hypothesis, "Snyk package install is failing during binary download or integrity verification") {
 		t.Fatalf("expected Snyk binary integrity hypothesis, got %q", opportunity.Hypothesis)
 	}
-	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "Inspect dependency resolution for core-js", "Inspect dependency resolution for esbuild", "Inspect dependency resolution for msw", "Inspect dependency resolution for protobufjs"} {
+	if len(opportunity.RawEvidence.Modules) != 1 || opportunity.RawEvidence.Modules[0] != "snyk" {
+		t.Fatalf("expected only snyk package evidence, got %#v", opportunity.RawEvidence.Modules)
+	}
+	if !strings.Contains(strings.Join(opportunity.RawEvidence.URLs, "\n"), "downloads.snyk.io/cli") {
+		t.Fatalf("expected Snyk download URL evidence, got %#v", opportunity.RawEvidence.URLs)
+	}
+	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "core-js", "esbuild", "msw", "protobufjs"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("Snyk integrity evidence produced resolver claim %q: %s", forbidden, combined)
 		}

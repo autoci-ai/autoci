@@ -344,21 +344,38 @@ type NPMFailureExtractor struct{}
 func (NPMFailureExtractor) Extract(observation Observation) []FailureEvidence {
 	var result []FailureEvidence
 	message := stripANSI(observation.Message)
-	for _, line := range diagnosticLines(message, []string{"npm", "pnpm", "yarn", "corepack", "eresolve", "registry", "dependency", "package"}) {
+	lines := nonEmptyLines(message)
+	for index, line := range lines {
+		if !isPackageDiagnosticLine(strings.ToLower(line)) {
+			continue
+		}
 		item := baseEvidence(observation, line)
 		item.RegistryURL = firstURL(line)
 		item.DependencyConflict = dependencyConflict(line)
 		item.InstallError = installError(line)
 		hasPackage := false
 		for _, pkg := range npmPackages(line) {
-			hasPackage = true
-			next := item
-			next.PackageName = pkg.name
-			next.PackageVersion = pkg.version
-			result = append(result, next)
+			if isNPMErrorWarningLine(line) || adjacentNPMErrorWarningMentionsPackage(lines, index, pkg.name) {
+				hasPackage = true
+				next := item
+				next.PackageName = pkg.name
+				next.PackageVersion = pkg.version
+				result = append(result, next)
+			}
 		}
 		if !hasPackage && (item.RegistryURL != "" || item.DependencyConflict != "" || item.InstallError != "") {
 			result = append(result, item)
+		}
+	}
+	if len(result) == 0 {
+		for _, line := range diagnosticLines(message, []string{"npm", "pnpm", "yarn", "corepack", "eresolve", "registry", "dependency", "package"}) {
+			item := baseEvidence(observation, line)
+			item.RegistryURL = firstURL(line)
+			item.DependencyConflict = dependencyConflict(line)
+			item.InstallError = installError(line)
+			if item.RegistryURL != "" || item.DependencyConflict != "" || item.InstallError != "" {
+				result = append(result, item)
+			}
 		}
 	}
 	return result
@@ -606,6 +623,50 @@ func isPackageDiagnosticLine(lower string) bool {
 	return false
 }
 
+func adjacentNPMErrorWarningMentionsPackage(lines []string, index int, pkg string) bool {
+	for _, adjacent := range []int{index - 1, index + 1} {
+		if adjacent < 0 || adjacent >= len(lines) || !isNPMErrorWarningLine(lines[adjacent]) {
+			continue
+		}
+		if lineMentionsPackage(lines[adjacent], pkg) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineMentionsPackage(line, pkg string) bool {
+	if pkg == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(line), strings.ToLower(pkg))
+}
+
+func isNPMErrorWarningLine(line string) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "snyk") && strings.Contains(lower, "stderr") && (strings.Contains(lower, "actual:") || strings.Contains(lower, "expected:")) {
+		return true
+	}
+	for _, term := range []string{
+		"npm err!", "pnpm err!", "yarn error", "error:", "failed", "failure", "stderr",
+		"could not be resolved", "doesn't provide", "does not provide", "incorrectly met",
+		"peer requirements", "lockfile would have been modified", "immutable install would have modified",
+		"post-resolution validation",
+	} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "yn0086") && strings.Contains(lower, "peer") {
+		return true
+	}
+	if (strings.Contains(lower, "yn0002") || strings.Contains(lower, "yn0060")) &&
+		(strings.Contains(lower, "provide") || strings.Contains(lower, "peer") || strings.Contains(lower, "incorrect")) {
+		return true
+	}
+	return false
+}
+
 func cleanPackageName(value string) string {
 	value = strings.TrimSpace(strings.Trim(value, `"'<>.,;:()[]{}|`))
 	value = stripANSISuffix(value)
@@ -698,6 +759,9 @@ func installError(line string) string {
 		if strings.Contains(lower, term) {
 			return truncate(line, 200)
 		}
+	}
+	if strings.Contains(lower, "snyk") && strings.Contains(lower, "stderr") && (strings.Contains(lower, "actual:") || strings.Contains(lower, "expected:")) {
+		return truncate(line, 200)
 	}
 	if strings.Contains(lower, "install") && (strings.Contains(lower, "failed") || strings.Contains(lower, "error")) {
 		return truncate(line, 200)

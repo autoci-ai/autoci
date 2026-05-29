@@ -177,9 +177,14 @@ func TestNPMEvidenceRejectsLogNoiseAndPreservesUsefulURLs(t *testing.T) {
 			t.Fatalf("unexpected package %q in %#v", bad, theme.Artifacts.Packages)
 		}
 	}
-	for _, want := range []string{"@snyk/protect", "@snyk/cli-interface", "core-js", "pact-core", "unrs-resolver"} {
+	for _, want := range []string{"@snyk/protect", "@snyk/cli-interface"} {
 		if !containsString(theme.Artifacts.Packages, want) {
 			t.Fatalf("missing package %q in %#v", want, theme.Artifacts.Packages)
+		}
+	}
+	for _, unrelated := range []string{"core-js", "pact-core", "unrs-resolver"} {
+		if containsString(theme.Artifacts.Packages, unrelated) {
+			t.Fatalf("unrelated package %q leaked into %#v", unrelated, theme.Artifacts.Packages)
 		}
 	}
 	for _, want := range []string{"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js", "https://downloads.snyk.io/cli"} {

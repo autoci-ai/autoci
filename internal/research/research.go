@@ -458,14 +458,19 @@ func rawEvidenceFromFailureTheme(workflowName string, theme failures.FailureThem
 	for _, evidence := range theme.Evidence {
 		raw.Images = append(raw.Images, evidence.Image)
 		raw.Registries = append(raw.Registries, evidence.Registry, evidence.RegistryHost)
-		raw.Modules = append(raw.Modules, evidence.SourceFile, evidence.MissingDependency, evidence.PackageName)
+		raw.Modules = append(raw.Modules, evidence.SourceFile, evidence.MissingDependency)
+		if theme.Signature != "npm install failure" || isNPMEvidencePackage(evidence) {
+			raw.Modules = append(raw.Modules, evidence.PackageName)
+		}
 		raw.URLs = append(raw.URLs, evidence.RegistryURL)
 		raw.Hosts = append(raw.Hosts, evidence.RegistryHost)
 		raw.LogExcerpts = append(raw.LogExcerpts, evidence.LogExcerpt, evidence.PullError, evidence.InstallError, evidence.DependencyConflict, evidence.CompilerError, evidence.AssertionMessage)
 	}
 	raw.Images = append(raw.Images, theme.Artifacts.Images...)
-	raw.Modules = append(raw.Modules, theme.Artifacts.Modules...)
-	raw.Modules = append(raw.Modules, theme.Artifacts.Packages...)
+	if theme.Signature != "npm install failure" {
+		raw.Modules = append(raw.Modules, theme.Artifacts.Modules...)
+		raw.Modules = append(raw.Modules, theme.Artifacts.Packages...)
+	}
 	raw.URLs = append(raw.URLs, theme.Artifacts.URLs...)
 	raw.Hosts = append(raw.Hosts, theme.Artifacts.Hosts...)
 	raw.Actions = actionsFromArtifacts(theme)
@@ -797,6 +802,37 @@ func cleanResearchPackages(values []string) []string {
 		}
 	}
 	return uniqueSorted(result)
+}
+
+func isNPMEvidencePackage(evidence failures.FailureEvidence) bool {
+	if evidence.PackageName == "" {
+		return false
+	}
+	line := strings.ToLower(strings.Join([]string{evidence.LogExcerpt, evidence.InstallError, evidence.DependencyConflict}, "\n"))
+	if !strings.Contains(line, strings.ToLower(evidence.PackageName)) {
+		return false
+	}
+	if strings.Contains(line, "snyk") && (strings.Contains(line, "actual:") || strings.Contains(line, "expected:")) {
+		return strings.EqualFold(evidence.PackageName, "snyk")
+	}
+	for _, token := range []string{
+		"npm err!", "pnpm err!", "yarn error", "error:", "failed", "failure", "stderr",
+		"could not be resolved", "doesn't provide", "does not provide", "incorrectly met",
+		"peer requirements", "lockfile would have been modified", "immutable install would have modified",
+		"post-resolution validation",
+	} {
+		if strings.Contains(line, token) {
+			return true
+		}
+	}
+	if strings.Contains(line, "yn0086") && strings.Contains(line, "peer") {
+		return true
+	}
+	if (strings.Contains(line, "yn0002") || strings.Contains(line, "yn0060")) &&
+		(strings.Contains(line, "provide") || strings.Contains(line, "peer") || strings.Contains(line, "incorrect")) {
+		return true
+	}
+	return false
 }
 
 func cleanResearchPackage(value string) string {
