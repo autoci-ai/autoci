@@ -60,6 +60,15 @@ type Options struct {
 	Signature      string
 	Artifacts      map[string][]string
 	CandidateSteps []stepresolver.CandidateStep
+	Hypotheses     []Hypothesis
+	LogExcerpts    []string
+	FixReadiness   string
+}
+
+type Hypothesis struct {
+	Summary    string
+	Confidence int
+	Evidence   []string
 }
 
 type Record struct {
@@ -298,6 +307,22 @@ func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflo
 		plan.Reason = fmt.Sprintf("Failure signature %q does not match targeted command %q.", options.Signature, candidate.Command)
 		return
 	}
+	if isSnykIntegrityContext(options) {
+		plan.Confidence = "low"
+		plan.Targets = []Target{candidate.Target}
+		plan.Hypothesis = primaryResearchHypothesis(options, "Snyk package install is failing during binary download or integrity verification.")
+		plan.ChangeSummary = "No safe patch generated. Evidence points to Snyk binary download or checksum verification, but a generic yarn install retry is not a proven mitigation."
+		plan.Reason = "Evidence suggests a Snyk binary download problem, but AutoCI cannot determine whether the root cause is network instability, cache corruption, upstream Snyk availability, or a checksum verification bug. AutoCI will not generate a generic retry around the entire dependency install step."
+		return
+	}
+	if !supportsInstallRetry(options) {
+		plan.Confidence = "low"
+		plan.Targets = []Target{candidate.Target}
+		plan.Hypothesis = primaryResearchHypothesis(options, plan.Hypothesis)
+		plan.ChangeSummary = "No safe patch generated. The selected workflow step is plausible, but cached research does not show that retrying the install command addresses the root cause."
+		plan.Reason = "AutoCI found a dependency install step, but the research evidence does not contain transient network, registry, timeout, or retryable download markers. Prefer a false negative over a generic retry patch."
+		return
+	}
 	updated := retryCommand(candidate.Command)
 	if updated == candidate.Command {
 		plan.Reason = "The targeted command already appears to be wrapped or cannot be safely rewritten."
@@ -309,7 +334,7 @@ func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflo
 	}
 	plan.Reason = selectionReason(candidate)
 	plan.ChangeSummary = fmt.Sprintf("Target step: %s `%s`. Proposed change: retry the dependency install command up to 3 times with exponential backoff.", candidate.Job, candidate.Command)
-	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, strings.Replace(candidate.LineText, candidate.Command, updated, 1), candidate.Target)
+	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, updated, candidate.Target)
 }
 
 func buildLintPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) {
@@ -336,7 +361,7 @@ func buildLintPatch(plan *Plan, original []byte, inspection workflowInspection, 
 	updated := retryCommand(candidate.Command)
 	plan.Confidence = "medium"
 	plan.ChangeSummary = fmt.Sprintf("Wrap only `%s` in the `%s` job with bounded retry logic.", candidate.Command, candidate.Job)
-	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, strings.Replace(candidate.LineText, candidate.Command, updated, 1), candidate.Target)
+	setSurgicalPatch(plan, original, candidate.Line, candidate.LineText, updated, candidate.Target)
 }
 
 func refuseSingleOccurrence(plan *Plan) {
@@ -363,7 +388,30 @@ func setSurgicalPatch(plan *Plan, original []byte, line int, oldLine, newLine st
 		StepsTouched:          []string{target.Command},
 		UnrelatedLinesChanged: 0,
 	}
-	plan.Diff = lineDiff(plan.Workflow, string(original), line, oldLine, newLine)
+	plan.Diff = lineDiff(plan.Workflow, string(original), line, oldLine, yamlRunReplacement(oldLine, newLine))
+}
+
+func yamlRunReplacement(oldLine, command string) string {
+	key := "run:"
+	index := strings.Index(oldLine, key)
+	if index < 0 || !strings.Contains(command, "\n") {
+		return strings.Replace(oldLine, strings.TrimSpace(valueAfterYAMLKey(oldLine)), command, 1)
+	}
+	indent := oldLine[:index]
+	bodyIndent := indent + "  "
+	var lines []string
+	lines = append(lines, indent+key+" |")
+	for _, line := range strings.Split(command, "\n") {
+		lines = append(lines, bodyIndent+line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func valueAfterYAMLKey(line string) string {
+	if index := strings.Index(line, ":"); index >= 0 {
+		return strings.TrimSpace(line[index+1:])
+	}
+	return strings.TrimSpace(line)
 }
 
 func inspectWorkflow(workflowName string, input []byte) (workflowInspection, error) {
@@ -474,12 +522,16 @@ func applyLineDiff(original string, plan Plan) string {
 	if targetLine <= 0 || targetLine > len(lines) {
 		return original
 	}
+	var added []string
 	for _, line := range strings.Split(plan.Diff, "\n") {
 		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
-			lines[targetLine-1] = strings.TrimPrefix(line, "+")
-			if !strings.HasSuffix(lines[targetLine-1], "\n") {
-				lines[targetLine-1] += "\n"
-			}
+			added = append(added, strings.TrimPrefix(line, "+"))
+		}
+	}
+	if len(added) > 0 {
+		lines[targetLine-1] = strings.Join(added, "\n")
+		if !strings.HasSuffix(lines[targetLine-1], "\n") {
+			lines[targetLine-1] += "\n"
 		}
 	}
 	return strings.Join(lines, "")
@@ -528,10 +580,16 @@ func retryCommand(command string) string {
 		return command
 	}
 	prefix, install := splitInstallCommand(command)
-	escaped := strings.ReplaceAll(install, `"`, `\"`)
-	retried := fmt.Sprintf(`n=0; until %s; do n=$((n+1)); [ "$n" -ge 3 ] && exit 1; sleep $((n * 5)); done`, escaped)
+	retried := strings.Join([]string{
+		"n=0",
+		fmt.Sprintf("until %s; do", install),
+		"  n=$((n+1))",
+		`  [ "$n" -ge 3 ] && exit 1`,
+		"  sleep $((n * 5))",
+		"done",
+	}, "\n")
 	if prefix != "" {
-		return prefix + " && " + retried
+		return prefix + "\n" + retried
 	}
 	return retried
 }
@@ -551,6 +609,48 @@ func splitInstallCommand(command string) (string, string) {
 	prefix = strings.TrimSuffix(prefix, "&&")
 	prefix = strings.TrimSpace(prefix)
 	return prefix, strings.TrimSpace(command[index:])
+}
+
+func isSnykIntegrityContext(options Options) bool {
+	text := researchText(options)
+	return strings.Contains(text, "snyk") &&
+		(strings.Contains(text, "actual:") || strings.Contains(text, "expected:") || strings.Contains(text, "checksum") || strings.Contains(text, "integrity verification"))
+}
+
+func supportsInstallRetry(options Options) bool {
+	text := researchText(options)
+	for _, token := range []string{
+		"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "connection reset",
+		"connection refused", "503", "502", "504", "temporary failure", "network", "retry",
+		"rate limit", "toomanyrequests",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func researchText(options Options) string {
+	var parts []string
+	parts = append(parts, options.Evidence, options.Signature, options.FixReadiness)
+	parts = append(parts, options.LogExcerpts...)
+	for key, values := range options.Artifacts {
+		parts = append(parts, key)
+		parts = append(parts, values...)
+	}
+	for _, hypothesis := range options.Hypotheses {
+		parts = append(parts, hypothesis.Summary)
+		parts = append(parts, hypothesis.Evidence...)
+	}
+	return strings.ToLower(strings.Join(parts, "\n"))
+}
+
+func primaryResearchHypothesis(options Options, fallback string) string {
+	if len(options.Hypotheses) > 0 && options.Hypotheses[0].Summary != "" {
+		return options.Hypotheses[0].Summary
+	}
+	return fallback
 }
 
 func isDependencyInstallCommand(command string) bool {
@@ -653,7 +753,9 @@ func lineDiff(path, original string, line int, oldLine, newLine string) string {
 		switch i {
 		case line:
 			fmt.Fprintf(&builder, "-%s\n", oldLine)
-			fmt.Fprintf(&builder, "+%s\n", newLine)
+			for _, added := range strings.Split(newLine, "\n") {
+				fmt.Fprintf(&builder, "+%s\n", added)
+			}
 		default:
 			fmt.Fprintf(&builder, " %s\n", lines[i-1])
 		}

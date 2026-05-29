@@ -26,7 +26,7 @@ jobs:
 		WorkflowName: "pr.yml",
 		Opportunity:  "reliability-npm-install-failure",
 		DryRun:       true,
-		Evidence:     "3 occurrences in frontend-unit-test.",
+		Evidence:     "3 occurrences in frontend-unit-test with ETIMEDOUT during yarn install.",
 		TargetJobs:   []string{"frontend-unit-test"},
 		Occurrences:  3,
 		Signature:    "dependency install failure",

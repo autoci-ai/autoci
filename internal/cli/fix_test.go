@@ -69,7 +69,7 @@ func TestFixDryRunOverwritesStaleSuccessfulStateWhenNoPatchGenerated(t *testing.
 	}
 }
 
-func TestFixConsumesResearchCandidateStepForCorepackYarnInstall(t *testing.T) {
+func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
 	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
@@ -94,7 +94,72 @@ func TestFixConsumesResearchCandidateStepForCorepackYarnInstall(t *testing.T) {
 		Evidence: []failures.FailureEvidence{{
 			Job:         "frontend-unit-test",
 			PackageName: "snyk",
-			LogExcerpt:  "corepack enable && yarn install --immutable failed while installing snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - actual: abc123",
+		}, {
+			Job:         "frontend-unit-test",
+			PackageName: "snyk",
+			LogExcerpt:  "snyk@npm:1.1302.1 STDERR - expected: def456",
+		}},
+	}}}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+	target, err := research.Targeted(dir, "", "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := state.WriteTargetedResearch(dir, target.ID, target, research.WriteTargetMarkdown(target)); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--path", dir, "fix", "failure-theme-npm-install-failure", "--dry-run"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
+	for _, want := range []string{
+		"Patch: not generated",
+		"Confidence: low",
+		"Evidence suggests a Snyk binary download problem",
+		"generic yarn install retry is not a proven mitigation",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "Patch: generated") || strings.Contains(output, "+        run:") {
+		t.Fatalf("Snyk integrity evidence generated a generic retry:\n%s", output)
+	}
+}
+
+func TestFixGeneratesReadableRetryForTransientInstallEvidence(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  frontend-unit-test:
+    steps:
+      - name: Install dependencies
+        run: corepack enable && yarn install --immutable
+      - run: yarn test
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := failures.Analysis{Workflow: "pr.yml", FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 3,
+		Jobs:        []string{"frontend-unit-test"},
+		Evidence: []failures.FailureEvidence{{
+			Job:          "frontend-unit-test",
+			LogExcerpt:   "corepack enable && yarn install --immutable failed with ETIMEDOUT while accessing registry.yarnpkg.com",
+			InstallError: "yarn install failed with ETIMEDOUT",
 		}},
 	}}}
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
@@ -119,8 +184,11 @@ func TestFixConsumesResearchCandidateStepForCorepackYarnInstall(t *testing.T) {
 	for _, want := range []string{
 		"Patch: generated",
 		"Target step: frontend-unit-test `corepack enable && yarn install --immutable`",
-		"Selected `corepack enable && yarn install --immutable` in job `frontend-unit-test` with workflow-step confidence",
-		"+        run: corepack enable && n=0; until yarn install --immutable;",
+		"+        run: |",
+		"+          corepack enable",
+		"+          n=0",
+		"+          until yarn install --immutable; do",
+		"+            sleep $((n * 5))",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)

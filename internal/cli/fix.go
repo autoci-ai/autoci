@@ -44,6 +44,9 @@ func newFixCommand() *cobra.Command {
 			signature := ""
 			artifacts := map[string][]string{}
 			var candidateSteps []stepresolver.CandidateStep
+			var hypotheses []fix.Hypothesis
+			var logExcerpts []string
+			fixReadiness := ""
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -62,6 +65,9 @@ func newFixCommand() *cobra.Command {
 				}
 				if target, err := state.ReadTargetedResearch[research.TargetReport](cfg.Path, opportunityID); err == nil {
 					candidateSteps = target.CandidateSteps
+					hypotheses = fixHypotheses(target.RootCauseHypotheses)
+					logExcerpts = target.LogExcerpts
+					fixReadiness = target.FixReadiness
 					if len(target.Jobs) > 0 {
 						targetJobs = target.Jobs
 					}
@@ -111,6 +117,9 @@ func newFixCommand() *cobra.Command {
 				Signature:      signature,
 				Artifacts:      artifacts,
 				CandidateSteps: candidateSteps,
+				Hypotheses:     hypotheses,
+				LogExcerpts:    logExcerpts,
+				FixReadiness:   fixReadiness,
 			})
 			if err != nil {
 				return err
@@ -137,4 +146,12 @@ func newFixCommand() *cobra.Command {
 	_ = viper.BindPFlag("fix-repo", cmd.Flags().Lookup("repo"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
 	return cmd
+}
+
+func fixHypotheses(values []research.RootCauseHypothesis) []fix.Hypothesis {
+	var result []fix.Hypothesis
+	for _, value := range values {
+		result = append(result, fix.Hypothesis{Summary: value.Summary, Confidence: value.Confidence, Evidence: value.Evidence})
+	}
+	return result
 }
