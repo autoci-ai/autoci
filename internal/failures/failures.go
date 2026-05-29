@@ -270,21 +270,21 @@ func containsAll(value string, terms []string) bool {
 }
 
 var (
-	imageRefToken        = `((?:docker://)?(?:(?:[a-zA-Z0-9.-]+(?::[0-9]+)?)/)?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*(?::[a-zA-Z0-9._-]+|@sha256:[a-fA-F0-9]{16,64}))`
+	imageRefToken        = `([^\s"'<>]+)`
 	urlPattern           = regexp.MustCompile(`https?://[^\s"'<>]+`)
 	npmPackagePattern    = regexp.MustCompile(`(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)(?:@([0-9][a-zA-Z0-9._+-]*))?`)
 	testNamePattern      = regexp.MustCompile(`(?:FAIL|--- FAIL:|not ok)\s+([A-Za-z0-9_./:-]+)`)
 	sourceFilePattern    = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|js|jsx|ts|tsx|java|py|rb|c|cc|cpp|h))(?::[0-9]+(?::[0-9]+)?)?`)
 	buildTargetPattern   = regexp.MustCompile(`(?:target|building|make)\s+([A-Za-z0-9_./:-]+)`)
 	imageContextPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)\b(?:container\s+image|image)\s*[:=]\s*["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\bcreating\s+container\s+for\s+image\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\bimage:\s*["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\bfor\s+image\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\bdocker\s+pull\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\b(?:failed\s+to\s+pull|failure\s+pulling|pulling|pulled|pull)\s+(?:docker\s+)?image\s+["']?` + imageRefToken),
 		regexp.MustCompile(`(?i)\bimage\s+pull(?:\s+\w+)*\s+from\s+["']?` + imageRefToken),
-		regexp.MustCompile(`(?i)\b(?:creating|created)\s+container\s+for\s+image\s+["']?` + imageRefToken),
-		regexp.MustCompile(`(?i)\b(?:pulling|pulled|pull|download(?:ing|ed)?)\s+(?:docker\s+)?(?:container\s+)?image\s+["']?` + imageRefToken),
-		regexp.MustCompile(`(?i)\b(?:pulling|pulled|pull|download(?:ing|ed)?)\s+["']?` + imageRefToken + `\s+(?:from|as)\s+(?:docker|container|testcontainers)`),
-		regexp.MustCompile(`(?i)\b(?:docker|testcontainers)[^:\n]*(?:image|pull|create)[^:\n]*[: ]\s*["']?` + imageRefToken),
-		regexp.MustCompile(`(?i)\b(?:from|using)\s+image\s+["']?` + imageRefToken),
 	}
+	timeLikeImagePattern = regexp.MustCompile(`^\d{1,2}:\d{2}`)
 )
 
 func matches(message string, pattern *regexp.Regexp) []string {
@@ -442,13 +442,11 @@ func imageReferences(line string) []string {
 }
 
 func isDiagnosticImage(value string) bool {
-	if strings.HasPrefix(strings.ToLower(value), "deadline:") {
+	lower := strings.ToLower(value)
+	if timeLikeImagePattern.MatchString(value) || strings.HasPrefix(lower, "deadline:") || strings.HasPrefix(value, "Port:") {
 		return false
 	}
 	if strings.HasPrefix(value, "docker://") || strings.Contains(value, "@sha256:") {
-		return true
-	}
-	if strings.Contains(value, ":") && !strings.Contains(value, "://") {
 		return true
 	}
 	for _, prefix := range []string{"ghcr.io/", "docker.io/", "quay.io/", "gcr.io/", "registry.k8s.io/"} {
@@ -456,7 +454,25 @@ func isDiagnosticImage(value string) bool {
 			return true
 		}
 	}
-	return false
+	if strings.Contains(value, "/") {
+		return strings.Contains(value, ":")
+	}
+	return isKnownBareImage(value)
+}
+
+func isKnownBareImage(value string) bool {
+	name, tag, ok := strings.Cut(value, ":")
+	if !ok || name == "" || tag == "" {
+		return false
+	}
+	switch strings.ToLower(name) {
+	case "mysql":
+		return tag == "8.0"
+	case "postgres", "redis", "minio":
+		return true
+	default:
+		return false
+	}
 }
 
 func imageRegistry(ref string) (string, string) {

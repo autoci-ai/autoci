@@ -97,6 +97,28 @@ Creating container for image mysql:8.0`
 	}
 }
 
+func TestImagePullEvidenceFromTestcontainersLifecycleLogs(t *testing.T) {
+	evidence := ExtractEvidence("image pull failure", Observation{
+		Job:   "integration",
+		RunID: "run-1",
+		Message: `2026/05/29 14:57:32 🐳 Creating container for image mysql:8.0
+2026/05/29 14:57:33 Waiting for container for image mysql:8.0 to be ready
+2026/05/29 14:57:34 Connected to container mysql
+2026/05/29 14:57:35 Created container 17:42
+2026/05/29 14:57:36 Started container deadline:soon
+2026/05/29 14:57:37 Container is ready Port:3306`,
+	})
+
+	if len(evidence) != 2 {
+		t.Fatalf("evidence = %#v", evidence)
+	}
+	for _, item := range evidence {
+		if item.Image != "mysql:8.0" {
+			t.Fatalf("unexpected image evidence = %#v", item)
+		}
+	}
+}
+
 func TestNPMEvidenceIsFailureSpecific(t *testing.T) {
 	analysis := Analyze("pr.yml", 10, 2, []Observation{{
 		Job:   "frontend",
