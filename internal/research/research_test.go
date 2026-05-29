@@ -330,29 +330,49 @@ func TestSnykHashMismatchClassifiesAsBinaryIntegrity(t *testing.T) {
 		Jobs:        []string{"frontend-unit-test"},
 		Artifacts: failures.FailureArtifacts{
 			Packages: []string{"snyk", "core-js", "esbuild", "msw", "protobufjs"},
-			URLs:     []string{"https://downloads.snyk.io/cli/v1.1302.1/snyk-linux"},
+			URLs: []string{
+				"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js",
+				"https://downloads.snyk.io/cli/v1.1302.1/snyk-linux",
+			},
 		},
 		Evidence: []failures.FailureEvidence{
-			{Job: "frontend-unit-test", LogExcerpt: "Corepack is about to download https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
+			{Job: "frontend-unit-test", LogExcerpt: "Corepack is about to download https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js", RegistryURL: "https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js"},
+			{Job: "frontend-unit-test", LogExcerpt: "Tests passed successfully"},
+			{Job: "frontend-unit-test", PackageName: "core-js", LogExcerpt: "core-js@npm:3.37.1 fetched during install"},
+			{Job: "frontend-unit-test", PackageName: "snyk", LogExcerpt: "snyk@npm:1.1302.1 STDERR - downloading https://downloads.snyk.io/cli/v1.1302.1/snyk-linux", RegistryURL: "https://downloads.snyk.io/cli/v1.1302.1/snyk-linux"},
 			{Job: "frontend-unit-test", PackageName: "snyk", LogExcerpt: "snyk@npm:1.1302.1 STDERR - actual: abc123"},
 			{Job: "frontend-unit-test", PackageName: "snyk", LogExcerpt: "snyk@npm:1.1302.1 STDERR - expected: def456"},
 		},
 	}}}
 
 	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
-	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.Hypotheses[0].Evidence, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n") + "\n" + strings.Join(opportunity.RawEvidence.Modules, "\n") + "\n" + strings.Join(opportunity.RawEvidence.URLs, "\n")
+	combined := opportunity.Hypothesis + "\n" +
+		strings.Join(opportunity.WhyWeBelieveThis, "\n") + "\n" +
+		strings.Join(opportunity.Hypotheses[0].Evidence, "\n") + "\n" +
+		strings.Join(opportunity.InvestigationSteps, "\n") + "\n" +
+		strings.Join(opportunity.RawEvidence.Modules, "\n") + "\n" +
+		strings.Join(opportunity.RawEvidence.URLs, "\n") + "\n" +
+		strings.Join(opportunity.RawEvidence.LogExcerpts, "\n")
 	if !strings.Contains(opportunity.Hypothesis, "Snyk package install is failing during binary download or integrity verification") {
 		t.Fatalf("expected Snyk binary integrity hypothesis, got %q", opportunity.Hypothesis)
 	}
 	if len(opportunity.RawEvidence.Modules) != 1 || opportunity.RawEvidence.Modules[0] != "snyk" {
 		t.Fatalf("expected only snyk package evidence, got %#v", opportunity.RawEvidence.Modules)
 	}
-	if !strings.Contains(strings.Join(opportunity.RawEvidence.URLs, "\n"), "downloads.snyk.io/cli") {
+	if len(opportunity.RawEvidence.URLs) != 1 || !strings.Contains(opportunity.RawEvidence.URLs[0], "downloads.snyk.io/cli") {
 		t.Fatalf("expected Snyk download URL evidence, got %#v", opportunity.RawEvidence.URLs)
 	}
-	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "core-js", "esbuild", "msw", "protobufjs"} {
+	if len(opportunity.RawEvidence.LogExcerpts) != 3 {
+		t.Fatalf("expected only Snyk download and checksum logs, got %#v", opportunity.RawEvidence.LogExcerpts)
+	}
+	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "core-js", "esbuild", "msw", "protobufjs", "repo.yarnpkg.com", "Corepack", "Tests passed"} {
 		if strings.Contains(combined, forbidden) {
 			t.Fatalf("Snyk integrity evidence produced resolver claim %q: %s", forbidden, combined)
+		}
+	}
+	for _, artifact := range opportunity.SupportingArtifacts {
+		if (artifact.Type == "module" && artifact.Value != "snyk") || (artifact.Type == "url" && !strings.Contains(artifact.Value, "downloads.snyk.io")) {
+			t.Fatalf("unexpected supporting artifact %#v in %#v", artifact, opportunity.SupportingArtifacts)
 		}
 	}
 }

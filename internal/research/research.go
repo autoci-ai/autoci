@@ -308,6 +308,9 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 
 func opportunityFromFailureTheme(workflowName string, theme failures.FailureTheme) ResearchOpportunity {
 	raw := rawEvidenceFromFailureTheme(workflowName, theme)
+	if theme.Signature == "npm install failure" && hasSnykIntegrityEvidence(raw) {
+		raw = snykIntegrityRawEvidence(raw)
+	}
 	why := whyForFailureTheme(theme, raw)
 	hypotheses := hypothesesForFailureTheme(theme, raw)
 	steps := investigationStepsForFailureTheme(theme, raw)
@@ -662,13 +665,20 @@ func imagePullInvestigationSteps(raw RawEvidence) []string {
 
 func npmInvestigationSteps(raw RawEvidence) []string {
 	var steps []string
+	if hasSnykIntegrityEvidence(raw) {
+		steps = append(steps, fmt.Sprintf("Inspect Snyk install output in %s for binary download URL, actual checksum, and expected checksum.", joinOrFallback(raw.Jobs, "the affected jobs")))
+		for _, url := range raw.URLs {
+			if isSnykDownloadEvidence(url) {
+				steps = append(steps, fmt.Sprintf("Check whether failed installs can download and verify the Snyk binary from %s.", url))
+			}
+		}
+		steps = append(steps, "Compare failed and successful Snyk install output to determine whether the checksum mismatch is deterministic or tied to download/cache state.")
+		return limitStrings(uniqueSorted(steps), 5)
+	}
 	if len(raw.Modules) == 0 && len(raw.URLs) == 0 {
 		steps = append(steps, fmt.Sprintf("Inspect failed dependency install logs for %s to identify the exact package, dependency constraint, registry URL, or package-manager error.", joinOrFallback(raw.Jobs, "the affected jobs")))
 		steps = append(steps, "Compare those failed install logs with successful runs before assigning a lockfile, package, registry, or cache root cause.")
 		return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
-	}
-	if hasSnykIntegrityEvidence(raw) {
-		steps = append(steps, fmt.Sprintf("Inspect Snyk install output in %s for binary download URL, actual checksum, and expected checksum.", joinOrFallback(raw.Jobs, "the affected jobs")))
 	}
 	if hasNPMResolutionEvidence(raw) {
 		for _, module := range raw.Modules {
@@ -712,11 +722,60 @@ func snykIntegrityEvidence(raw RawEvidence) []string {
 	var result []string
 	for _, line := range raw.LogExcerpts {
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "snyk") || strings.Contains(lower, "actual:") || strings.Contains(lower, "expected:") {
+		if isSnykIntegrityLogLine(lower) {
 			result = append(result, line)
 		}
 	}
 	return limitStrings(uniqueSorted(result), 4)
+}
+
+func snykIntegrityRawEvidence(raw RawEvidence) RawEvidence {
+	scoped := raw
+	scoped.Modules = []string{"snyk"}
+	scoped.URLs = nil
+	for _, value := range raw.URLs {
+		if isSnykDownloadEvidence(value) {
+			scoped.URLs = append(scoped.URLs, value)
+		}
+	}
+	scoped.Hosts = nil
+	for _, value := range raw.Hosts {
+		if strings.Contains(strings.ToLower(value), "downloads.snyk.io") {
+			scoped.Hosts = append(scoped.Hosts, value)
+		}
+	}
+	scoped.LogExcerpts = nil
+	for _, line := range raw.LogExcerpts {
+		lower := strings.ToLower(line)
+		if isSnykIntegrityLogLine(lower) {
+			scoped.LogExcerpts = append(scoped.LogExcerpts, line)
+		}
+		if isSnykDownloadEvidence(line) {
+			if url := firstURLFromText(line); url != "" {
+				scoped.URLs = append(scoped.URLs, url)
+			}
+		}
+	}
+	scoped.Modules = uniqueSorted(scoped.Modules)
+	scoped.URLs = uniqueSorted(scoped.URLs)
+	scoped.Hosts = uniqueSorted(scoped.Hosts)
+	scoped.LogExcerpts = uniqueSorted(scoped.LogExcerpts)
+	return scoped
+}
+
+func isSnykIntegrityLogLine(lower string) bool {
+	return (strings.Contains(lower, "snyk") || strings.Contains(lower, "snyk-linux")) &&
+		(strings.Contains(lower, "actual:") || strings.Contains(lower, "expected:") || strings.Contains(lower, "downloads.snyk.io"))
+}
+
+func isSnykDownloadEvidence(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "downloads.snyk.io") || strings.Contains(lower, "snyk-linux")
+}
+
+func firstURLFromText(value string) string {
+	match := regexp.MustCompile(`https?://[^\s"'<>]+`).FindString(value)
+	return strings.TrimRight(match, ".,)")
 }
 
 func hasNPMResolutionEvidence(raw RawEvidence) bool {
