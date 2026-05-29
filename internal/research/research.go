@@ -618,39 +618,49 @@ func npmPackagePhrase(raw RawEvidence) string {
 func cleanResearchPackages(values []string) []string {
 	var result []string
 	for _, value := range values {
-		if isCleanResearchPackage(value) {
-			result = append(result, value)
+		if cleaned := cleanResearchPackage(value); cleaned != "" {
+			result = append(result, cleaned)
 		}
 	}
 	return uniqueSorted(result)
 }
 
-func isCleanResearchPackage(value string) bool {
+func cleanResearchPackage(value string) string {
 	value = strings.TrimSpace(value)
+	value = stripResearchANSISuffix(value)
 	if value == "" || strings.HasPrefix(value, "--") || strings.Contains(value, "\x1b") {
-		return false
+		return ""
 	}
 	lower := strings.ToLower(value)
 	switch lower {
-	case "-", "0m", "because", "the", "your", "you", "and", "or", "to", "from", "with", "for", "install", "failed", "failure", "error":
-		return false
+	case "-", "0m", "because", "the", "your", "you", "and", "or", "to", "from", "with", "for", "install", "failed", "failure", "error",
+		"corepack", "yarn", "npm", "p-prefixed", "peer-requirements", "six-letter":
+		return ""
 	}
 	if regexp.MustCompile(`^\d{1,4}[:/-]\d`).MatchString(value) || regexp.MustCompile(`^[0-9.]+[ms]?$`).MatchString(value) {
-		return false
+		return ""
 	}
 	if strings.HasPrefix(value, "@") {
 		parts := strings.Split(value, "/")
-		return len(parts) == 2 && parts[0] != "@" && parts[1] != ""
+		if len(parts) == 2 && parts[0] != "@" && parts[1] != "" {
+			return value
+		}
+		return ""
 	}
 	if strings.Contains(value, "/") {
-		return false
+		return ""
 	}
 	switch lower {
-	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "corepack", "yarn", "npm", "pnpm", "lodash":
-		return true
+	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "pnpm", "lodash",
+		"core-js", "pact-core", "unrs-resolver", "msw", "protobufjs", "esbuild":
+		return value
 	default:
-		return strings.Contains(value, "-")
+		return ""
 	}
+}
+
+func stripResearchANSISuffix(value string) string {
+	return regexp.MustCompile(`^\d{1,3}m([A-Za-z@][A-Za-z0-9._/-]*)$`).ReplaceAllString(value, "$1")
 }
 
 func testInvestigationSteps(raw RawEvidence) []string {

@@ -165,17 +165,19 @@ func TestNPMEvidenceRejectsLogNoiseAndPreservesUsefulURLs(t *testing.T) {
 		Message: "\x1b[31m➤ YN0000\x1b[0m: 0m 111myarn because the your --immutable\n" +
 			"2026-05-29T14:57:32Z yarn install failed because your lockfile would have been modified\n" +
 			"➤ YN0001: │ Error: @snyk/protect@npm:1.1294.0 failed because @snyk/cli-interface@npm:^2.0.0 could not be resolved\n" +
+			"➤ YN0002: │ 173mcore-js@npm:3.37.1 173mpact-core@npm:1.0.0 173munrs-resolver@npm:1.9.0\n" +
+			"➤ YN0003: │ Corepack Yarn corepack npm p-prefixed peer-requirements six-letter yarn\n" +
 			"➤ YN0000: │ Downloading https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js\n" +
 			"npm ERR! request to https://downloads.snyk.io/cli failed",
 	}})
 
 	theme := analysis.FailureThemes[0]
-	for _, bad := range []string{"-", "0m", "111myarn", "because", "the", "your", "--immutable"} {
+	for _, bad := range []string{"-", "0m", "111myarn", "because", "the", "your", "--immutable", "Corepack", "Yarn", "corepack", "npm", "p-prefixed", "peer-requirements", "six-letter", "yarn", "173mcore-js", "173mpact-core", "173munrs-resolver"} {
 		if containsString(theme.Artifacts.Packages, bad) {
 			t.Fatalf("unexpected package %q in %#v", bad, theme.Artifacts.Packages)
 		}
 	}
-	for _, want := range []string{"@snyk/protect", "@snyk/cli-interface"} {
+	for _, want := range []string{"@snyk/protect", "@snyk/cli-interface", "core-js", "pact-core", "unrs-resolver"} {
 		if !containsString(theme.Artifacts.Packages, want) {
 			t.Fatalf("missing package %q in %#v", want, theme.Artifacts.Packages)
 		}

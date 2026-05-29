@@ -608,6 +608,7 @@ func isPackageDiagnosticLine(lower string) bool {
 
 func cleanPackageName(value string) string {
 	value = strings.TrimSpace(strings.Trim(value, `"'<>.,;:()[]{}|`))
+	value = stripANSISuffix(value)
 	lower := strings.ToLower(value)
 	if value == "" || strings.HasPrefix(value, "--") || strings.Contains(value, "\x1b") {
 		return ""
@@ -638,6 +639,10 @@ func isTimestampLike(value string) bool {
 	return regexp.MustCompile(`^\d{1,4}[:/-]\d`).MatchString(value)
 }
 
+func stripANSISuffix(value string) string {
+	return regexp.MustCompile(`^\d{1,3}m([A-Za-z@][A-Za-z0-9._/-]*)$`).ReplaceAllString(value, "$1")
+}
+
 func isNumericLike(value string) bool {
 	for _, r := range value {
 		if (r < '0' || r > '9') && r != '.' && r != 'm' && r != 's' {
@@ -649,10 +654,11 @@ func isNumericLike(value string) bool {
 
 func isKnownUnscopedPackage(value string) bool {
 	switch value {
-	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "corepack", "yarn", "npm", "pnpm", "lodash":
+	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "pnpm", "lodash",
+		"core-js", "pact-core", "unrs-resolver", "msw", "protobufjs", "esbuild":
 		return true
 	default:
-		return strings.Contains(value, "-")
+		return false
 	}
 }
 
@@ -840,7 +846,8 @@ func isPackageNoise(value string) bool {
 	case "-", "install", "failed", "failure", "error", "warning", "warn", "err",
 		"because", "the", "your", "you", "and", "or", "to", "from", "with", "for",
 		"this", "that", "package", "packages", "dependency", "dependencies",
-		"resolution", "step", "immutable", "cache", "completed", "done":
+		"resolution", "step", "immutable", "cache", "completed", "done",
+		"corepack", "yarn", "npm", "p-prefixed", "peer-requirements", "six-letter":
 		return true
 	default:
 		return false

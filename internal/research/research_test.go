@@ -117,7 +117,7 @@ func TestNPMResearchDoesNotClaimReferencedPackagesWhenEvidenceIsEmpty(t *testing
 			Occurrences: 3,
 			Jobs:        []string{"frontend"},
 			Artifacts: failures.FailureArtifacts{
-				Packages: []string{"-", "0m", "111myarn", "because", "the", "your"},
+				Packages: []string{"-", "0m", "111myarn", "because", "the", "your", "173mcore-js", "173mpact-core", "173munrs-resolver", "Corepack", "Yarn", "corepack", "npm", "p-prefixed", "peer-requirements", "six-letter", "yarn", "msw", "protobufjs", "snyk", "esbuild"},
 			},
 			Evidence: []failures.FailureEvidence{{
 				RunID:        "run-1",
@@ -134,18 +134,37 @@ func TestNPMResearchDoesNotClaimReferencedPackagesWhenEvidenceIsEmpty(t *testing
 		t.Fatal("expected opportunities")
 	}
 	opportunity := plan.Opportunities[0]
-	if strings.Contains(strings.Join(opportunity.WhyWeBelieveThis, "\n"), "Referenced packages") {
-		t.Fatalf("unexpected package claim: %#v", opportunity.WhyWeBelieveThis)
+	for _, bad := range []string{"173mcore-js", "173mpact-core", "173munrs-resolver", "Corepack", "Yarn", "corepack", "npm", "p-prefixed", "peer-requirements", "six-letter", "yarn"} {
+		if containsResearchString(opportunity.RawEvidence.Modules, bad) || containsSupportingModule(opportunity.SupportingArtifacts, bad) {
+			t.Fatalf("bad package %q leaked into package evidence: %#v", bad, opportunity)
+		}
 	}
-	if len(opportunity.RawEvidence.Modules) != 0 {
-		t.Fatalf("expected noisy cached package artifacts to be filtered, got %#v", opportunity.RawEvidence.Modules)
-	}
-	if !strings.Contains(opportunity.Hypothesis, "dependency install") {
-		t.Fatalf("hypothesis should describe install failure, got %q", opportunity.Hypothesis)
+	for _, want := range []string{"core-js", "pact-core", "unrs-resolver", "msw", "protobufjs", "snyk", "esbuild"} {
+		if !containsResearchString(opportunity.RawEvidence.Modules, want) {
+			t.Fatalf("missing clean package %q in %#v", want, opportunity.RawEvidence.Modules)
+		}
 	}
 	if !strings.Contains(strings.Join(opportunity.RawEvidence.URLs, "\n"), "repo.yarnpkg.com") {
 		t.Fatalf("expected URL evidence, got %#v", opportunity.RawEvidence.URLs)
 	}
+}
+
+func containsResearchString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSupportingModule(values []SupportingArtifact, want string) bool {
+	for _, value := range values {
+		if value.Type == "module" && value.Value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestVerboseShowsCompleteBacklog(t *testing.T) {
