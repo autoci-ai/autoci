@@ -1,6 +1,9 @@
 package failures
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAnalyzeGroupsFailuresByTheme(t *testing.T) {
 	analysis := Analyze("pr.yml", 31, 7, []Observation{
@@ -64,6 +67,33 @@ failed to pull image docker://golang:1.24: manifest unknown`
 	}
 	if len(theme.Evidence) != 1 || theme.Evidence[0].PullError != "manifest unknown" {
 		t.Fatalf("evidence = %#v", theme.Evidence)
+	}
+}
+
+func TestImagePullEvidenceOnlyUsesExplicitImageContexts(t *testing.T) {
+	message := `17:42:31.001 image pull check started
+deadline:2026-05-29T17:42:00Z image pull timeout metadata
+test TestHTTP/17:42 failed while waiting for image pull
+Creating container for image mysql:8.0
+Creating container for image mysql:8.0`
+
+	analysis := Analyze("pr.yml", 10, 2, []Observation{{
+		Job:     "integration",
+		RunID:   "run-1",
+		Message: message,
+	}})
+
+	theme := analysis.FailureThemes[0]
+	if got := theme.Artifacts.Images; len(got) != 1 || got[0] != "mysql:8.0" {
+		t.Fatalf("images = %#v", got)
+	}
+	if len(theme.Evidence) != 1 {
+		t.Fatalf("expected duplicate image evidence to collapse, got %#v", theme.Evidence)
+	}
+	for _, evidence := range theme.Evidence {
+		if evidence.Image == "17:42" || strings.HasPrefix(evidence.Image, "deadline:") {
+			t.Fatalf("unexpected metadata image = %#v", evidence)
+		}
 	}
 }
 

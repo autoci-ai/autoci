@@ -270,12 +270,21 @@ func containsAll(value string, terms []string) bool {
 }
 
 var (
-	imagePattern       = regexp.MustCompile(`(?:docker://)?(?:(?:[a-zA-Z0-9.-]+(?::[0-9]+)?)/)?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*(?::[a-zA-Z0-9._-]+|@sha256:[a-fA-F0-9]{16,64})`)
-	urlPattern         = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	npmPackagePattern  = regexp.MustCompile(`(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)(?:@([0-9][a-zA-Z0-9._+-]*))?`)
-	testNamePattern    = regexp.MustCompile(`(?:FAIL|--- FAIL:|not ok)\s+([A-Za-z0-9_./:-]+)`)
-	sourceFilePattern  = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|js|jsx|ts|tsx|java|py|rb|c|cc|cpp|h))(?::[0-9]+(?::[0-9]+)?)?`)
-	buildTargetPattern = regexp.MustCompile(`(?:target|building|make)\s+([A-Za-z0-9_./:-]+)`)
+	imageRefToken        = `((?:docker://)?(?:(?:[a-zA-Z0-9.-]+(?::[0-9]+)?)/)?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*(?::[a-zA-Z0-9._-]+|@sha256:[a-fA-F0-9]{16,64}))`
+	urlPattern           = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	npmPackagePattern    = regexp.MustCompile(`(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)(?:@([0-9][a-zA-Z0-9._+-]*))?`)
+	testNamePattern      = regexp.MustCompile(`(?:FAIL|--- FAIL:|not ok)\s+([A-Za-z0-9_./:-]+)`)
+	sourceFilePattern    = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|js|jsx|ts|tsx|java|py|rb|c|cc|cpp|h))(?::[0-9]+(?::[0-9]+)?)?`)
+	buildTargetPattern   = regexp.MustCompile(`(?:target|building|make)\s+([A-Za-z0-9_./:-]+)`)
+	imageContextPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(?:container\s+image|image)\s*[:=]\s*["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\bimage\s+pull(?:\s+\w+)*\s+from\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\b(?:creating|created)\s+container\s+for\s+image\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\b(?:pulling|pulled|pull|download(?:ing|ed)?)\s+(?:docker\s+)?(?:container\s+)?image\s+["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\b(?:pulling|pulled|pull|download(?:ing|ed)?)\s+["']?` + imageRefToken + `\s+(?:from|as)\s+(?:docker|container|testcontainers)`),
+		regexp.MustCompile(`(?i)\b(?:docker|testcontainers)[^:\n]*(?:image|pull|create)[^:\n]*[: ]\s*["']?` + imageRefToken),
+		regexp.MustCompile(`(?i)\b(?:from|using)\s+image\s+["']?` + imageRefToken),
+	}
 )
 
 func matches(message string, pattern *regexp.Regexp) []string {
@@ -298,7 +307,7 @@ func (ImagePullFailureExtractor) Extract(observation Observation) []FailureEvide
 		if len(refs) == 0 {
 			evidence := baseEvidence(observation, line)
 			evidence.PullError = pullError(line)
-			if evidence.PullError != "" {
+			if evidence.PullError != "" && hasStandalonePullError(line) {
 				result = append(result, evidence)
 			}
 			continue
@@ -418,15 +427,24 @@ func diagnosticLines(message string, terms []string) []string {
 
 func imageReferences(line string) []string {
 	var result []string
-	for _, candidate := range matches(line, imagePattern) {
-		if isDiagnosticImage(candidate) {
-			result = append(result, candidate)
+	for _, pattern := range imageContextPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(line, -1) {
+			if len(match) < 2 {
+				continue
+			}
+			candidate := strings.TrimSpace(strings.Trim(match[1], `"'<>.,;:`))
+			if isDiagnosticImage(candidate) {
+				result = append(result, candidate)
+			}
 		}
 	}
 	return uniqueSorted(result)
 }
 
 func isDiagnosticImage(value string) bool {
+	if strings.HasPrefix(strings.ToLower(value), "deadline:") {
+		return false
+	}
 	if strings.HasPrefix(value, "docker://") || strings.Contains(value, "@sha256:") {
 		return true
 	}
@@ -475,6 +493,16 @@ func pullError(line string) string {
 		return truncate(line, 160)
 	}
 	return ""
+}
+
+func hasStandalonePullError(line string) bool {
+	lower := strings.ToLower(line)
+	for _, term := range []string{"manifest unknown", "not found", "unauthorized", "denied", "pull access denied", "too many requests"} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
 }
 
 type npmPackage struct {
@@ -580,16 +608,10 @@ func appendEvidence(items []FailureEvidence, evidence FailureEvidence) []Failure
 
 func evidenceKey(evidence FailureEvidence) string {
 	return strings.Join([]string{
+		evidence.RunID,
 		evidence.Job,
-		evidence.Image,
-		evidence.PackageName,
-		evidence.TestName,
-		evidence.SourceFile,
-		evidence.BuildTarget,
-		evidence.PullError,
-		evidence.InstallError,
-		evidence.CompilerError,
 		evidence.LogExcerpt,
+		evidence.Image,
 	}, "\x00")
 }
 
