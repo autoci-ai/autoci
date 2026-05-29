@@ -78,12 +78,12 @@ func TestFindingsRankAndClassifyRuntimeEvidence(t *testing.T) {
 	titles := map[string]string{}
 	for _, finding := range findings {
 		ids = append(ids, finding.ID)
-		titles[finding.ID] = finding.Title
+		titles[findingKind(finding.ID)] = finding.Title
 	}
 
 	wantOrder := []string{"repeated-failures", "flaky-job", "failure-aggregation-job", "high-leverage-slow-job", "long-running-job", "high-variance"}
 	for i, want := range wantOrder {
-		if len(ids) <= i || ids[i] != want {
+		if len(ids) <= i || findingKind(ids[i]) != want {
 			t.Fatalf("finding order = %v, want prefix %v", ids, wantOrder)
 		}
 	}
@@ -107,7 +107,7 @@ func TestAggregationJobIsNotClassifiedAsFlaky(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("expected one finding, got %d", len(findings))
 	}
-	if findings[0].ID != "failure-aggregation-job" {
+	if findingKind(findings[0].ID) != "failure-aggregation-job" {
 		t.Fatalf("expected aggregation finding, got %s", findings[0].ID)
 	}
 }

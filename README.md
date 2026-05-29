@@ -68,6 +68,14 @@ autoci research --workflow pr.yml --format json
 autoci research --workflow pr.yml --verbose
 ```
 
+Analyze recurring failure causes:
+
+```bash
+autoci failures --workflow pr.yml
+autoci failures --workflow pr.yml --format json
+autoci failures --workflow pr.yml --report failures.md
+```
+
 Validate with Depot:
 
 ```bash
@@ -135,3 +143,7 @@ observe -> research -> experiment -> validate -> measure -> remember
 ```
 
 Current research output includes a top recommendation and the top three highest-value opportunities by default. Additional opportunities are hidden unless `--verbose` is used. Each opportunity includes a stable ID, hypothesis, evidence, experiment, success criteria, risk, estimated impact, and suggested commands.
+
+## Failure Analysis
+
+`autoci failures` inspects recent failed workflow runs and groups failed jobs by deterministic failure signatures. It is intended to answer what is breaking, while `profile` answers what is happening and `research` answers what to investigate next.

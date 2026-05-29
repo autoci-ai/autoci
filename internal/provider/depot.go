@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/scanner"
 )
@@ -51,6 +52,59 @@ func (p DepotProvider) Profile(ctx context.Context) (*profile.Profile, error) {
 		builder.add(detail)
 	}
 	return builder.profile(), nil
+}
+
+func (p DepotProvider) Failures(ctx context.Context, workflowName string) (*failures.Analysis, error) {
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	repo := p.Repo
+	if repo == "" {
+		repo = detectGitHubRepo(ctx, p.RepoPath)
+	}
+	workflows, err := p.listWorkflows(ctx, repo, limit)
+	if err != nil {
+		return nil, err
+	}
+	workflows = p.filterToLocalWorkflows(workflows)
+	failed := make([]workflowListItem, 0)
+	for _, item := range workflows {
+		if isFailure(item.Status) {
+			failed = append(failed, item)
+		}
+	}
+
+	var observations []failures.Observation
+	for _, item := range failed {
+		detail, err := p.showWorkflow(ctx, item.WorkflowID)
+		if err != nil {
+			return nil, err
+		}
+		for _, job := range detail.Jobs {
+			if !isFailure(job.Status) {
+				continue
+			}
+			jobName := normalizeJobName(job.JobKey, job.Name, detail.Workflow.WorkflowPath)
+			message := strings.TrimSpace(job.ErrorMessage)
+			if message == "" {
+				message = strings.TrimSpace(detail.Workflow.ErrorMessage)
+			}
+			if logs, err := p.jobLogs(ctx, job); err == nil && strings.TrimSpace(logs) != "" {
+				message = logs
+			}
+			if message == "" {
+				message = job.Status
+			}
+			observations = append(observations, failures.Observation{
+				Job:     jobName,
+				RunID:   detail.Run.RunID,
+				Message: message,
+			})
+		}
+	}
+	analysis := failures.Analyze(workflowName, len(workflows), len(failed), observations)
+	return &analysis, nil
 }
 
 func (p DepotProvider) listWorkflows(ctx context.Context, repo string, limit int) ([]workflowListItem, error) {
@@ -168,37 +222,62 @@ type workflowListItem struct {
 	WorkflowID   string `json:"workflow_id"`
 	Name         string `json:"name"`
 	WorkflowPath string `json:"workflow_path"`
+	Status       string `json:"status"`
 }
 
 type workflowDetail struct {
+	Run      runNode      `json:"run"`
 	Workflow workflowNode `json:"workflow"`
 	Jobs     []jobNode    `json:"jobs"`
+}
+
+type runNode struct {
+	RunID string `json:"run_id"`
 }
 
 type workflowNode struct {
 	Name         string `json:"name"`
 	WorkflowPath string `json:"workflow_path"`
 	Status       string `json:"status"`
+	ErrorMessage string `json:"error_message"`
 	StartedAt    string `json:"started_at"`
 	FinishedAt   string `json:"finished_at"`
 	CreatedAt    string `json:"created_at"`
 }
 
 type jobNode struct {
-	JobKey     string        `json:"job_key"`
-	Name       string        `json:"name"`
-	Status     string        `json:"status"`
-	StartedAt  string        `json:"started_at"`
-	FinishedAt string        `json:"finished_at"`
-	Needs      []string      `json:"needs"`
-	DependsOn  []string      `json:"depends_on"`
-	Attempts   []attemptNode `json:"attempts"`
+	JobID        string        `json:"job_id"`
+	JobKey       string        `json:"job_key"`
+	Name         string        `json:"name"`
+	Status       string        `json:"status"`
+	ErrorMessage string        `json:"error_message"`
+	StartedAt    string        `json:"started_at"`
+	FinishedAt   string        `json:"finished_at"`
+	Needs        []string      `json:"needs"`
+	DependsOn    []string      `json:"depends_on"`
+	Attempts     []attemptNode `json:"attempts"`
 }
 
 type attemptNode struct {
+	AttemptID  string `json:"attempt_id"`
 	Status     string `json:"status"`
 	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at"`
+}
+
+func (p DepotProvider) jobLogs(ctx context.Context, job jobNode) (string, error) {
+	id := job.JobID
+	if len(job.Attempts) > 0 && job.Attempts[len(job.Attempts)-1].AttemptID != "" {
+		id = job.Attempts[len(job.Attempts)-1].AttemptID
+	}
+	if id == "" {
+		return "", nil
+	}
+	out, err := runDepot(ctx, p.RepoPath, "ci", "logs", id)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 type builder struct {
@@ -453,7 +532,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 	for _, workflow := range workflows {
 		if workflow.RunsAnalyzed >= 3 && workflow.FailureRate >= 0.10 {
 			findings = append(findings, profile.Finding{
-				ID:             "repeated-failures",
+				ID:             "repeated-failures-workflow",
 				Title:          "Repeated workflow failures",
 				Severity:       "high",
 				Workflow:       workflow.Name,
@@ -465,7 +544,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 			if job.RunsAnalyzed >= 3 && job.FailureRate >= 0.05 {
 				if job.IsAggregator {
 					findings = append(findings, profile.Finding{
-						ID:             "failure-aggregation-job",
+						ID:             stableFindingID("failure-aggregation-job", job.Name),
 						Title:          "Failure aggregation job",
 						Severity:       "medium",
 						Workflow:       workflow.Name,
@@ -475,7 +554,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 					})
 				} else {
 					findings = append(findings, profile.Finding{
-						ID:             "flaky-job",
+						ID:             stableFindingID("flaky-job", job.Name),
 						Title:          "Flaky job",
 						Severity:       "high",
 						Workflow:       workflow.Name,
@@ -487,7 +566,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 			}
 			if job.RunsAnalyzed >= 2 && job.ContributionPct >= 15 && job.AvgDuration >= 2*time.Minute {
 				findings = append(findings, profile.Finding{
-					ID:             "high-leverage-slow-job",
+					ID:             stableFindingID("high-leverage-slow-job", job.Name),
 					Title:          "High-leverage slow job",
 					Severity:       "medium",
 					Workflow:       workflow.Name,
@@ -498,7 +577,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 			}
 			if job.RunsAnalyzed >= 2 && job.AvgDuration >= 5*time.Minute && job.ContributionPct < 15 {
 				findings = append(findings, profile.Finding{
-					ID:             "long-running-job",
+					ID:             stableFindingID("long-running-job", job.Name),
 					Title:          "Long-running job",
 					Severity:       "medium",
 					Workflow:       workflow.Name,
@@ -509,7 +588,7 @@ func findingsFor(workflows []profile.WorkflowProfile) []profile.Finding {
 			}
 			if job.RunsAnalyzed >= 3 && job.MinDuration > 0 && job.MaxDuration >= 3*job.MinDuration && job.MaxDuration-job.MinDuration >= 5*time.Minute {
 				findings = append(findings, profile.Finding{
-					ID:             "high-variance",
+					ID:             stableFindingID("high-variance", job.Name),
 					Title:          "High runtime variance",
 					Severity:       "medium",
 					Workflow:       workflow.Name,
@@ -542,7 +621,7 @@ func longRunningRecommendation(job profile.JobProfile) string {
 }
 
 func findingRank(finding profile.Finding) int {
-	switch finding.ID {
+	switch findingKind(finding.ID) {
 	case "repeated-failures":
 		return 10
 	case "flaky-job":
@@ -560,4 +639,46 @@ func findingRank(finding profile.Finding) int {
 	default:
 		return 100
 	}
+}
+
+func stableFindingID(kind, target string) string {
+	if target == "" {
+		return kind
+	}
+	return kind + "-" + slug(target)
+}
+
+func findingKind(id string) string {
+	for _, kind := range []string{
+		"repeated-failures",
+		"flaky-job",
+		"critical-path-blocker",
+		"failure-aggregation-job",
+		"high-leverage-slow-job",
+		"long-running-job",
+		"high-variance",
+	} {
+		if id == kind || strings.HasPrefix(id, kind+"-") {
+			return kind
+		}
+	}
+	return id
+}
+
+func slug(value string) string {
+	value = strings.ToLower(value)
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
 }

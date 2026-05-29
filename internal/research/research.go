@@ -77,7 +77,7 @@ func buildBacklog(workflowName string, findings []profile.Finding) []scoredOppor
 	var backlog []scoredOpportunity
 	var flakyFindings []profile.Finding
 	for _, finding := range findings {
-		if finding.ID == "flaky-job" {
+		if findingKind(finding.ID) == "flaky-job" {
 			flakyFindings = append(flakyFindings, finding)
 			continue
 		}
@@ -95,7 +95,7 @@ func buildBacklog(workflowName string, findings []profile.Finding) []scoredOppor
 }
 
 func suppressFinding(finding profile.Finding) bool {
-	if finding.ID != "long-running-job" {
+	if findingKind(finding.ID) != "long-running-job" {
 		return false
 	}
 	return runtimeContribution(finding.Evidence) < 5
@@ -107,14 +107,14 @@ func opportunityFor(workflowName string, finding profile.Finding) (ResearchOppor
 		target = finding.Workflow
 	}
 	commands := suggestedCommands(workflowName)
-	switch finding.ID {
+	switch findingKind(finding.ID) {
 	case "repeated-failures":
 		return ResearchOpportunity{
 			ID:                "workflow-reliability",
 			Title:             "Investigate workflow reliability",
 			Hypothesis:        "Workflow failures are concentrated in one or more recurring failure modes.",
 			Evidence:          finding.Evidence,
-			Experiment:        "Group recent failed runs by failed job and failure signature, then inspect the most common group first.",
+			Experiment:        "Run failure analysis, group recent failed runs by signature, then inspect the most common group first.",
 			SuccessCriteria:   "Workflow failure rate falls below 5% or the dominant failure mode is identified.",
 			Risk:              "Low",
 			EstimatedImpact:   "Reliability improvements are likely to provide more benefit than runtime optimization.",
@@ -199,7 +199,7 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 		Title:             "Investigate recurring job instability",
 		Hypothesis:        "Multiple job failures may share recurring causes such as nondeterministic tests, timing, environment setup, or external dependencies.",
 		Evidence:          strings.Join(evidence, "\n"),
-		Experiment:        "Group failed runs by failure signature and identify recurring root causes.",
+		Experiment:        "Run failure analysis, group failed runs by failure signature, and identify recurring root causes.",
 		SuccessCriteria:   "Failure rate for the recurring jobs falls below 2% or the dominant root cause is identified.",
 		Risk:              "Low",
 		EstimatedImpact:   "Improved workflow reliability and less time spent chasing repeated CI failures.",
@@ -243,10 +243,27 @@ func whyNow(opportunity ResearchOpportunity) string {
 func suggestedCommands(workflowName string) []string {
 	return []string{
 		fmt.Sprintf("autoci profile --workflow %s", workflowName),
+		fmt.Sprintf("autoci failures --workflow %s", workflowName),
 		fmt.Sprintf("autoci research --workflow %s --verbose", workflowName),
 		"depot ci workflow list --output json",
 		"depot ci workflow show <workflow-id> --output json",
 	}
+}
+
+func findingKind(id string) string {
+	for _, kind := range []string{
+		"repeated-failures",
+		"flaky-job",
+		"failure-aggregation-job",
+		"high-leverage-slow-job",
+		"long-running-job",
+		"high-variance",
+	} {
+		if id == kind || strings.HasPrefix(id, kind+"-") {
+			return kind
+		}
+	}
+	return id
 }
 
 var percentPattern = regexp.MustCompile(`([0-9]+(?:\.[0-9]+)?)%`)

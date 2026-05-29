@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"strings"
 
 	"github.com/autoci-ai/autoci/internal/profile"
 )
@@ -69,7 +70,7 @@ func findingScore(finding profile.Finding) int {
 		"long-running-job":        45,
 		"high-variance":           40,
 		"critical-path-blocker":   80,
-	}[finding.ID]
+	}[findingKind(finding.ID)]
 	if score == 0 {
 		score = 50
 	}
@@ -80,4 +81,21 @@ func findingScore(finding profile.Finding) int {
 		score -= 5
 	}
 	return int(math.Max(0, math.Min(100, float64(score))))
+}
+
+func findingKind(id string) string {
+	for _, kind := range []string{
+		"repeated-failures",
+		"flaky-job",
+		"failure-aggregation-job",
+		"high-leverage-slow-job",
+		"long-running-job",
+		"high-variance",
+		"critical-path-blocker",
+	} {
+		if id == kind || strings.HasPrefix(id, kind+"-") {
+			return kind
+		}
+	}
+	return id
 }

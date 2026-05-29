@@ -56,6 +56,7 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newAnalyzeCommand())
 	root.AddCommand(newDoctorCommand())
+	root.AddCommand(newFailuresCommand())
 	root.AddCommand(newProfileCommand())
 	root.AddCommand(newResearchCommand())
 	root.AddCommand(newValidateCommand())
