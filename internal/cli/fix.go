@@ -50,6 +50,7 @@ func newFixCommand() *cobra.Command {
 			var logExcerpts []string
 			readiness := lifecycle.Readiness("")
 			var gaps []fix.EvidenceGap
+			var nextSteps []string
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -84,6 +85,7 @@ func newFixCommand() *cobra.Command {
 					logExcerpts = target.LogExcerpts
 					readiness = target.Readiness
 					gaps = fixGaps(target.Gaps)
+					nextSteps = target.RecommendedInvestigation
 					if len(target.Jobs) > 0 {
 						targetJobs = target.Jobs
 					}
@@ -137,6 +139,7 @@ func newFixCommand() *cobra.Command {
 				LogExcerpts:    logExcerpts,
 				Readiness:      readiness,
 				Gaps:           gaps,
+				NextSteps:      nextSteps,
 			})
 			if err != nil {
 				return err
@@ -187,13 +190,13 @@ func refusalPlan(sourceID, workflow string, readiness lifecycle.Readiness, reaso
 		SourceID:       sourceID,
 		Workflow:       workflow,
 		Readiness:      readiness,
-		FixType:        fix.RootCauseFix,
 		Confidence:     "low",
 		Reason:         reason,
 		PatchGenerated: false,
 		PatchApplied:   false,
 		PatchScope:     fix.PatchScope{JobsTouched: []string{}, StepsTouched: []string{}},
 		Validation:     []string{},
+		NextSteps:      []string{},
 		Gaps:           gaps,
 	}
 }

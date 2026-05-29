@@ -20,7 +20,7 @@ type Plan struct {
 	Branch          string              `json:"branch,omitempty"`
 	Workflow        string              `json:"workflow"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType         FixType             `json:"fixType"`
+	FixType         FixType             `json:"fixType,omitempty"`
 	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
@@ -34,6 +34,7 @@ type Plan struct {
 	PatchScope      PatchScope          `json:"patchScope"`
 	Diff            string              `json:"diff,omitempty"`
 	Validation      []string            `json:"validation"`
+	NextSteps       []string            `json:"nextSteps,omitempty"`
 	FilesChanged    []string            `json:"filesChanged,omitempty"`
 	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
 	patchedContent  string
@@ -79,6 +80,7 @@ type Options struct {
 	LogExcerpts    []string
 	Readiness      lifecycle.Readiness
 	Gaps           []EvidenceGap
+	NextSteps      []string
 }
 
 type EvidenceGap struct {
@@ -98,7 +100,7 @@ type Record struct {
 	Workflow        string              `json:"workflow"`
 	Branch          string              `json:"branch,omitempty"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType         FixType             `json:"fixType"`
+	FixType         FixType             `json:"fixType,omitempty"`
 	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
@@ -112,6 +114,7 @@ type Record struct {
 	PatchScope      PatchScope          `json:"patchScope"`
 	FilesChanged    []string            `json:"filesChanged"`
 	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
+	NextSteps       []string            `json:"nextSteps,omitempty"`
 	DryRun          bool                `json:"dryRun"`
 }
 
@@ -151,6 +154,7 @@ func Generate(options Options) (Plan, error) {
 	plan := basePlan(id, sourceID, options.WorkflowName, options.Evidence)
 	plan.Readiness = options.Readiness
 	plan.Gaps = options.Gaps
+	plan.NextSteps = emptyStrings(options.NextSteps)
 	plan.AffectedJobs = uniqueStringsPreserveOrder(options.TargetJobs)
 
 	original, err := os.ReadFile(options.Workflow.Path)
@@ -182,6 +186,10 @@ func Generate(options Options) (Plan, error) {
 	}
 	if options.Readiness == lifecycle.ReadinessNeedsMoreEvidence && plan.FixType == InstrumentationFix && plan.Reason != "" {
 		plan.Validation = diagnosticNextSteps(plan.Workflow)
+		return normalizePlan(plan), nil
+	}
+	if options.Readiness != "" && options.Readiness != lifecycle.ReadinessReadyForFix {
+		applyNotReadyPlan(&plan, options)
 		return normalizePlan(plan), nil
 	}
 
@@ -255,6 +263,7 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		PatchScope:      plan.PatchScope,
 		FilesChanged:    emptyStrings(plan.FilesChanged),
 		Gaps:            plan.Gaps,
+		NextSteps:       emptyStrings(plan.NextSteps),
 		DryRun:          dryRun,
 	}
 }
@@ -459,6 +468,47 @@ func refuseSingleOccurrence(plan *Plan) {
 
 func diagnosticNextSteps(workflow string) []string {
 	return []string{fmt.Sprintf("autoci failures --workflow %s --verbose", workflow)}
+}
+
+func applyNotReadyPlan(plan *Plan, options Options) {
+	plan.FixType = ""
+	plan.Confidence = "low"
+	plan.PatchGenerated = false
+	plan.PatchApplied = false
+	plan.Diff = ""
+	plan.FilesChanged = nil
+	plan.PatchScope = PatchScope{JobsTouched: []string{}, StepsTouched: []string{}}
+	reasons := notReadyReasons(options)
+	plan.Reason = strings.Join(reasons, "\n")
+	plan.ChangeSummary = "No patch generated. Research marked this finding as not ready for a safe workflow change."
+	plan.SuccessCriteria = "Collect the missing evidence, rerun targeted research, then generate a fix only when readiness becomes ready_for_fix."
+	if len(plan.NextSteps) == 0 {
+		plan.NextSteps = defaultNotReadyNextSteps(plan.Workflow, plan.SourceID)
+	}
+	plan.Validation = plan.NextSteps
+}
+
+func notReadyReasons(options Options) []string {
+	var reasons []string
+	if len(options.CandidateSteps) == 0 {
+		reasons = append(reasons, "No workflow step matched the finding with enough confidence.")
+	}
+	for _, gap := range options.Gaps {
+		if gap.Message != "" {
+			reasons = append(reasons, gap.Message)
+		}
+	}
+	if len(reasons) == 0 {
+		reasons = append(reasons, fmt.Sprintf("Research readiness is %s, so AutoCI cannot safely generate a workflow patch yet.", options.Readiness))
+	}
+	return uniqueStringsPreserveOrder(reasons)
+}
+
+func defaultNotReadyNextSteps(workflow, sourceID string) []string {
+	if isOptimizationFinding(sourceID) {
+		return []string{fmt.Sprintf("autoci profile --workflow %s", workflow)}
+	}
+	return []string{fmt.Sprintf("autoci research %s", sourceID)}
 }
 
 func buildInstrumentationPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) bool {
@@ -1058,6 +1108,10 @@ func isDependencyInstall(id string) bool {
 
 func isLintInstability(id string) bool {
 	return strings.Contains(id, "flaky-job") || strings.Contains(id, "go-lint") || strings.Contains(id, "golangci-lint")
+}
+
+func isOptimizationFinding(id string) bool {
+	return strings.Contains(id, "high-variance") || strings.Contains(id, "long-running-job") || strings.Contains(id, "high-leverage-slow-job") || strings.Contains(id, "performance")
 }
 
 func isSingleLine(value string) bool {

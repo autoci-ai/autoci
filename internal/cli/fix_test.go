@@ -243,10 +243,79 @@ func TestFixRejectsResearchEvidenceThatIsNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Patch type: root_cause", "Patch generated: no", "AutoCI could not find a dependency install command in the targeted job."} {
+	if strings.Contains(output, "Patch type: root_cause") {
+		t.Fatalf("not-ready output claimed root-cause fix:\n%s", output)
+	}
+	for _, want := range []string{"Cannot generate fix.", "Readiness: needs_more_evidence", "Exact package or dependency constraint not identified"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestFixTextNotReadyProfileFindingUsesResearchGaps(t *testing.T) {
+	dir := setupProfileNotReadyFixState(t)
+	output, err := runFixOutputForID(t, dir, "high-variance-go-unit-test-matrix-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Cannot generate fix.",
+		"Readiness: not_ready",
+		"Reason:",
+		"- No workflow step matched the finding with enough confidence.",
+		"- Representative log excerpts are not present in cached evidence.",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	for _, unwanted := range []string{"Patch type: root_cause", "No surgical fix generator is available"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("output contains %q:\n%s", unwanted, output)
+		}
+	}
+}
+
+func TestFixJSONNotReadyProfileFindingIncludesGapsAndNextSteps(t *testing.T) {
+	dir := setupProfileNotReadyFixState(t)
+	output, err := runFixOutputForID(t, dir, "high-variance-go-unit-test-matrix-2", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		SourceID       string              `json:"sourceId"`
+		Readiness      lifecycle.Readiness `json:"readiness"`
+		FixType        string              `json:"fixType"`
+		PatchGenerated bool                `json:"patchGenerated"`
+		PatchApplied   bool                `json:"patchApplied"`
+		Reason         string              `json:"reason"`
+		Gaps           []struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"gaps"`
+		NextSteps []string `json:"nextSteps"`
+	}
+	assertJSONOnlyAndJQ(t, output, &plan)
+	if plan.SourceID != "high-variance-go-unit-test-matrix-2" || plan.Readiness != lifecycle.ReadinessNotReady {
+		t.Fatalf("unexpected plan: %#v\n%s", plan, output)
+	}
+	if plan.FixType != "" || plan.PatchGenerated || plan.PatchApplied {
+		t.Fatalf("not-ready plan claimed patch/fix type: %#v\n%s", plan, output)
+	}
+	for _, want := range []string{"No workflow step matched the finding with enough confidence.", "Representative log excerpts are not present in cached evidence."} {
+		if !strings.Contains(plan.Reason, want) {
+			t.Fatalf("reason missing %q: %#v", want, plan)
+		}
+	}
+	if len(plan.Gaps) != 1 || plan.Gaps[0].Message != "Representative log excerpts are not present in cached evidence." {
+		t.Fatalf("gaps = %#v", plan.Gaps)
+	}
+	if len(plan.NextSteps) == 0 || !strings.Contains(strings.Join(plan.NextSteps, "\n"), "Inspect workflow steps for job go-unit-test:matrix-2") {
+		t.Fatalf("nextSteps = %#v", plan.NextSteps)
+	}
+	if strings.Contains(output, "No surgical fix generator is available") || strings.Contains(output, `"fixType": "root_cause"`) {
+		t.Fatalf("json contains generator/root cause claim:\n%s", output)
 	}
 }
 
@@ -421,10 +490,15 @@ func runFix(t *testing.T, dir string) error {
 
 func runFixOutput(t *testing.T, dir string, extraArgs ...string) (string, error) {
 	t.Helper()
+	return runFixOutputForID(t, dir, "failure-theme-npm-install-failure", extraArgs...)
+}
+
+func runFixOutputForID(t *testing.T, dir, id string, extraArgs ...string) (string, error) {
+	t.Helper()
 	root := newRootCommand()
 	var out bytes.Buffer
 	root.SetOut(&out)
-	args := []string{"--path", dir, "fix", "failure-theme-npm-install-failure", "--dry-run"}
+	args := []string{"--path", dir, "fix", id, "--dry-run"}
 	args = append(args, extraArgs...)
 	root.SetArgs(args)
 	err := root.Execute()
@@ -501,6 +575,38 @@ func setupImageNeedsEvidenceFixState(t *testing.T) string {
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
 		t.Fatal(err)
 	}
+	return dir
+}
+
+func setupProfileNotReadyFixState(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  go-unit-test:
+    steps:
+      - uses: actions/checkout@v4
+      - run: go test ./...
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeRawResearchEvidence(t, dir, "high-variance-go-unit-test-matrix-2", map[string]any{
+		"id":        "high-variance-go-unit-test-matrix-2",
+		"workflow":  "pr.yml",
+		"jobs":      []string{"go-unit-test:matrix-2"},
+		"readiness": lifecycle.ReadinessNotReady,
+		"gaps": []map[string]any{
+			{"type": "missing_logs", "message": "Representative log excerpts are not present in cached evidence."},
+		},
+		"recommendedInvestigation": []string{
+			"Inspect workflow steps for job go-unit-test:matrix-2 in pr.yml and identify the command or action consuming the measured time.",
+			"Compare recent slow and fast runs for the same job before changing cache keys, matrix shape, or runner sizing.",
+		},
+	})
 	return dir
 }
 

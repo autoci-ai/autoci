@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/autoci-ai/autoci/internal/fix"
 )
 
 func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
+	if plan.Readiness != "" && plan.Readiness != "ready_for_fix" && !plan.PatchGenerated && plan.FixType == "" {
+		writeNotReadyFixTerminal(w, plan)
+		return
+	}
 	if plan.PatchGenerated && !dryRun {
 		fmt.Fprintln(w, "Fix generated")
 	} else if plan.PatchGenerated {
@@ -82,6 +87,31 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 	fmt.Fprintln(w, "Next step:")
 	for _, command := range plan.Validation {
 		fmt.Fprintf(w, "  %s\n", command)
+	}
+}
+
+func writeNotReadyFixTerminal(w io.Writer, plan fix.Plan) {
+	fmt.Fprintln(w, "Cannot generate fix.")
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "Readiness: %s\n", plan.Readiness)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Reason:")
+	if plan.Reason == "" {
+		fmt.Fprintln(w, "- Research evidence is incomplete.")
+	} else {
+		for _, reason := range strings.Split(plan.Reason, "\n") {
+			reason = strings.TrimSpace(strings.TrimPrefix(reason, "-"))
+			if reason != "" {
+				fmt.Fprintf(w, "- %s\n", reason)
+			}
+		}
+	}
+	if len(plan.NextSteps) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Next step:")
+		for _, step := range plan.NextSteps {
+			fmt.Fprintf(w, "  %s\n", step)
+		}
 	}
 }
 
