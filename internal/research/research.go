@@ -500,21 +500,24 @@ func whyForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []string {
 	if len(raw.Modules) > 0 {
 		if theme.Signature == "npm install failure" {
 			reasons = append(reasons, fmt.Sprintf("Referenced packages: %s.", strings.Join(raw.Modules, ", ")))
-			return append(reasons, whyURLsAndLogs(raw)...)
+			return append(reasons, whyURLsAndLogs(theme.Signature, raw)...)
 		}
 		reasons = append(reasons, fmt.Sprintf("Recurring module/package/source evidence: %s.", strings.Join(raw.Modules, ", ")))
 	}
-	reasons = append(reasons, whyURLsAndLogs(raw)...)
+	reasons = append(reasons, whyURLsAndLogs(theme.Signature, raw)...)
 	return reasons
 }
 
-func whyURLsAndLogs(raw RawEvidence) []string {
+func whyURLsAndLogs(signature string, raw RawEvidence) []string {
 	var reasons []string
 	if len(raw.URLs) > 0 {
 		reasons = append(reasons, fmt.Sprintf("Relevant URL evidence: %s.", strings.Join(raw.URLs, ", ")))
 	}
-	if len(raw.LogExcerpts) > 0 {
-		reasons = append(reasons, fmt.Sprintf("Representative log evidence: %s.", strings.Join(limitStrings(raw.LogExcerpts, 3), " | ")))
+	logs := representativeLogs(signature, raw)
+	if len(logs) > 0 {
+		reasons = append(reasons, fmt.Sprintf("Representative log evidence: %s.", strings.Join(limitStrings(logs, 3), " | ")))
+	} else if signature == "npm install failure" {
+		reasons = append(reasons, "Representative log evidence is thin; cached lines do not include a strong npm/yarn failure diagnostic.")
 	}
 	return reasons
 }
@@ -576,24 +579,24 @@ func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
 	packages := npmPackagePhrase(raw)
 	registry := joinOrFallback(raw.URLs, joinOrFallback(raw.Hosts, "the package registry"))
 	jobs := joinOrFallback(raw.Jobs, "the affected jobs")
-	if len(raw.Modules) == 0 && len(raw.URLs) == 0 && !hasNPMRootCauseEvidence(raw) {
+	if !hasNPMRootCauseEvidence(raw) {
 		return []RootCauseHypothesis{
-			{Summary: fmt.Sprintf("A recurring npm/yarn dependency install failure is affecting %s. The current evidence does not identify a package, registry, or resolver error, so inspect the failed install logs before assigning root cause.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)},
+			{Summary: cautiousNPMHypothesis(jobs), Confidence: 45, Evidence: npmEvidenceSnippets(raw)},
 			{Summary: "The failure grouping is likely useful, but the cached evidence is too thin to distinguish lockfile, registry access, package manager, or cache failures.", Confidence: 35, Evidence: failureEvidenceSnippets(raw)},
 		}
 	}
 	var hypotheses []RootCauseHypothesis
-	if hasAnyEvidenceToken(raw, []string{"eresolve", "peer"}) {
-		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s with resolver or peer-dependency conflict evidence.", packages), Confidence: 78, Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})})
+	if hasNPMResolutionEvidence(raw) {
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s with explicit resolver or peer-dependency conflict evidence.", packages), Confidence: 78, Evidence: matchingEvidence(raw, npmResolutionEvidenceTokens())})
 	}
-	if len(raw.URLs) > 0 && hasAnyEvidenceToken(raw, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "registry", "http", "https"}) {
+	if len(raw.URLs) > 0 && hasAnyEvidenceToken(raw, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound"}) {
 		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Install failures may correlate with access to %s.", registry), Confidence: 68, Evidence: append(raw.URLs, failureEvidenceSnippets(raw)...)})
 	}
 	if len(raw.Modules) > 0 && hasAnyEvidenceToken(raw, []string{"lockfile", "immutable", "would have been modified"}) {
 		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("The affected job may be using lockfile state that disagrees with %s.", packages), Confidence: 62, Evidence: append(raw.Modules, matchingEvidence(raw, []string{"lockfile", "immutable", "would have been modified"})...)})
 	}
 	if len(hypotheses) == 0 {
-		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("A recurring npm/yarn dependency install failure is affecting %s; inspect failed logs for resolver errors, package names, registry URLs, and lockfile messages.", jobs), Confidence: 45, Evidence: failureEvidenceSnippets(raw)})
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: cautiousNPMHypothesis(jobs), Confidence: 45, Evidence: npmEvidenceSnippets(raw)})
 	}
 	return limitHypotheses(hypotheses, 5)
 }
@@ -681,7 +684,25 @@ func hasImageRootCauseEvidence(raw RawEvidence) bool {
 }
 
 func hasNPMRootCauseEvidence(raw RawEvidence) bool {
-	return hasAnyEvidenceToken(raw, []string{"eresolve", "peer", "lockfile", "immutable", "would have been modified", "econnreset", "etimedout", "timeout", "eai_again", "enotfound", "registry", "http", "https"})
+	return hasNPMResolutionEvidence(raw) || hasAnyEvidenceToken(raw, []string{"lockfile would have been modified", "immutable install", "econnreset", "etimedout", "timeout", "eai_again", "enotfound"})
+}
+
+func hasNPMResolutionEvidence(raw RawEvidence) bool {
+	return hasAnyEvidenceToken(raw, npmResolutionEvidenceTokens()) || hasYN0086PeerContext(raw)
+}
+
+func npmResolutionEvidenceTokens() []string {
+	return []string{"yn0002", "yn0060", "peer requirements", "lockfile would have been modified", "immutable install", "doesn’t provide", "doesn't provide", "incorrectly met", "resolution step", "post-resolution validation"}
+}
+
+func hasYN0086PeerContext(raw RawEvidence) bool {
+	for _, line := range raw.LogExcerpts {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "yn0086") && strings.Contains(lower, "peer") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasAnyEvidenceToken(raw RawEvidence, tokens []string) bool {
@@ -705,6 +726,40 @@ func limitHypotheses(values []RootCauseHypothesis, limit int) []RootCauseHypothe
 		return values
 	}
 	return values[:limit]
+}
+
+func cautiousNPMHypothesis(jobs string) string {
+	return fmt.Sprintf("Frontend dependency installation is failing in %s. Current evidence points to package manager/bootstrap or external download activity, but does not yet identify whether the root cause is dependency resolution, registry/network access, binary download failure, cache state, or lockfile drift.", jobs)
+}
+
+func representativeLogs(signature string, raw RawEvidence) []string {
+	if signature != "npm install failure" {
+		return raw.LogExcerpts
+	}
+	return npmEvidenceSnippets(raw)
+}
+
+func npmEvidenceSnippets(raw RawEvidence) []string {
+	var strong []string
+	for _, line := range raw.LogExcerpts {
+		if isNPMRepresentativeLine(line) {
+			strong = append(strong, line)
+		}
+	}
+	return limitStrings(uniqueSorted(strong), 4)
+}
+
+func isNPMRepresentativeLine(line string) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "passed") || strings.Contains(lower, "successfully") || strings.Contains(lower, "tests passed") {
+		return false
+	}
+	for _, token := range []string{"yarn", "corepack", "npm", "snyk", "download", "error", "fail", "yn000", "yn001", "yn002", "yn003", "yn004", "yn005", "yn006", "yn007", "yn008", "yn009"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanResearchPackages(values []string) []string {

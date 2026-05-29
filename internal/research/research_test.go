@@ -192,7 +192,7 @@ func TestWeakNPMEvidenceDoesNotAssertRootCause(t *testing.T) {
 
 	plan := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true)
 	opportunity := plan.Opportunities[0]
-	if !strings.Contains(opportunity.Hypothesis, "recurring npm/yarn dependency install failure is affecting frontend") {
+	if !strings.Contains(opportunity.Hypothesis, "Frontend dependency installation is failing in frontend") {
 		t.Fatalf("weak npm hypothesis over/under stated: %q", opportunity.Hypothesis)
 	}
 	for _, forbidden := range []string{"peer constraints disagree", "registry access", "lockfile state"} {
@@ -259,6 +259,68 @@ func TestStrongNPMEvidenceUsesCleanPackagesOnly(t *testing.T) {
 		if strings.Contains(combined, bad) {
 			t.Fatalf("bad npm token leaked into opportunity: %q in %s", bad, combined)
 		}
+	}
+}
+
+func TestNPMDownloadEvidenceDoesNotClaimResolutionFailure(t *testing.T) {
+	failureAnalysis := &failures.Analysis{FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 3,
+		Jobs:        []string{"frontend-unit-test"},
+		Artifacts: failures.FailureArtifacts{
+			Packages: []string{"core-js", "pact-core", "unrs-resolver", "msw"},
+			URLs:     []string{"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js", "https://downloads.snyk.io/cli"},
+		},
+		Evidence: []failures.FailureEvidence{
+			{
+				Job:         "frontend-unit-test",
+				LogExcerpt:  "Corepack is about to download https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js",
+				RegistryURL: "https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js",
+			},
+			{
+				Job:         "frontend-unit-test",
+				LogExcerpt:  "Downloading Snyk binary from https://downloads.snyk.io/cli",
+				RegistryURL: "https://downloads.snyk.io/cli",
+			},
+			{
+				Job:        "frontend-unit-test",
+				LogExcerpt: "✓ test passed successfully",
+			},
+		},
+	}}}
+
+	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
+	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.WhyWeBelieveThis, "\n") + "\n" + strings.Join(opportunity.Hypotheses[0].Evidence, "\n")
+	for _, forbidden := range []string{"Dependency resolution is failing", "peer-dependency conflict", "lockfile state"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("download-only evidence asserted %q: %s", forbidden, combined)
+		}
+	}
+	if !strings.Contains(opportunity.Hypothesis, "package manager/bootstrap or external download activity") {
+		t.Fatalf("expected cautious bootstrap/download hypothesis, got %q", opportunity.Hypothesis)
+	}
+	if strings.Contains(strings.Join(opportunity.WhyWeBelieveThis, "\n"), "test passed successfully") {
+		t.Fatalf("successful test line leaked into representative evidence: %#v", opportunity.WhyWeBelieveThis)
+	}
+}
+
+func TestNPMResolutionMarkersAllowResolutionHypothesis(t *testing.T) {
+	failureAnalysis := &failures.Analysis{FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 2,
+		Jobs:        []string{"frontend-unit-test"},
+		Evidence: []failures.FailureEvidence{{
+			Job:         "frontend-unit-test",
+			PackageName: "msw",
+			LogExcerpt:  "YN0002: msw doesn't provide @types/node, requested by protobufjs",
+		}},
+	}}}
+
+	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
+	if !strings.Contains(opportunity.Hypothesis, "Dependency resolution is failing") {
+		t.Fatalf("expected explicit resolution marker to allow resolution hypothesis, got %q", opportunity.Hypothesis)
 	}
 }
 
