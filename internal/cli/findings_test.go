@@ -66,6 +66,25 @@ func TestFindingsCombinedDefaultPrioritizesFailures(t *testing.T) {
 	}
 }
 
+func TestFindingsDeduplicatesByStableID(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureAggregationState(t, dir)
+	writeFindingsRepeatedFailureProfileState(t, dir)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items)
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	item := items[0]
+	if item.ID != "repeated-failures-workflow" || item.Source != "failures" {
+		t.Fatalf("deduped item = %#v", item)
+	}
+	if !strings.Contains(item.Evidence, "4 repeated failures reported by gate.") {
+		t.Fatalf("deduped item did not prefer failure evidence: %#v", item)
+	}
+}
+
 func TestFindingsLimitAndNext(t *testing.T) {
 	dir := t.TempDir()
 	writeFindingsFailureState(t, dir)
@@ -263,6 +282,7 @@ type findingJSON struct {
 	Source      string `json:"source"`
 	Category    string `json:"category"`
 	Priority    string `json:"priority"`
+	Evidence    string `json:"evidence"`
 	NextCommand string `json:"nextCommand"`
 	NextAction  string `json:"nextAction"`
 	Status      string `json:"status"`
@@ -331,6 +351,35 @@ func writeFindingsProfileState(t *testing.T, dir string) {
 		Workflow: "pr.yml",
 		Job:      "integration-test:matrix-27",
 		Evidence: "Duration varies between 2m and 10m.",
+	}}}
+	if err := state.Write(dir, "profile", "pr.yml", prof); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFindingsFailureAggregationState(t *testing.T, dir string) {
+	t.Helper()
+	analysis := failures.Analysis{
+		Workflow:     "pr.yml",
+		RunsAnalyzed: 10,
+		FailedRuns:   4,
+		AggregationJobs: []failures.AggregationJob{{
+			Job:         "gate",
+			Occurrences: 4,
+		}},
+	}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFindingsRepeatedFailureProfileState(t *testing.T, dir string) {
+	t.Helper()
+	prof := &profile.Profile{Findings: []profile.Finding{{
+		ID:       "repeated-failures-workflow",
+		Severity: "high",
+		Workflow: "pr.yml",
+		Evidence: "Failure rate 40% across 10 runs.",
 	}}}
 	if err := state.Write(dir, "profile", "pr.yml", prof); err != nil {
 		t.Fatal(err)

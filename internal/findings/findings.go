@@ -97,6 +97,7 @@ func Load(repoPath string, options Options) ([]Finding, error) {
 	enrichWithState(repoPath, result)
 	result = filterCategory(result, options)
 	result = filterStatus(result, options)
+	result = deduplicateByID(result)
 	sortFindings(result)
 	if options.Limit > 0 && len(result) > options.Limit {
 		result = result[:options.Limit]
@@ -368,6 +369,113 @@ func filterCategory(items []Finding, options Options) []Finding {
 	return result
 }
 
+func deduplicateByID(items []Finding) []Finding {
+	byID := map[string]Finding{}
+	var order []string
+	for _, item := range items {
+		if item.ID == "" {
+			continue
+		}
+		existing, ok := byID[item.ID]
+		if !ok {
+			byID[item.ID] = item
+			order = append(order, item.ID)
+			continue
+		}
+		byID[item.ID] = mergeDuplicateFinding(existing, item)
+	}
+	result := make([]Finding, 0, len(order))
+	for _, id := range order {
+		result = append(result, byID[id])
+	}
+	return result
+}
+
+func mergeDuplicateFinding(a, b Finding) Finding {
+	primary, secondary := a, b
+	if preferFinding(b, a) {
+		primary, secondary = b, a
+	}
+	primary.Jobs = uniqueStrings(append(primary.Jobs, secondary.Jobs...))
+	primary.Gaps = uniqueGaps(append(primary.Gaps, secondary.Gaps...))
+	primary.Occurrences = maxInt(primary.Occurrences, secondary.Occurrences)
+	primary.FailureRate = maxFloat(primary.FailureRate, secondary.FailureRate)
+	primary.Confidence = maxInt(primary.Confidence, secondary.Confidence)
+	if primary.Workflow == "" {
+		primary.Workflow = secondary.Workflow
+	}
+	if primary.Evidence == "" || (secondary.Evidence != "" && evidenceRichness(secondary.Evidence) > evidenceRichness(primary.Evidence) && priorityRank(primary.Priority) == priorityRank(secondary.Priority)) {
+		primary.Evidence = secondary.Evidence
+	}
+	primary.kindRank = kindRank(primary.ID)
+	primary.statusRank = statusRank(primary.Status)
+	return primary
+}
+
+func preferFinding(candidate, incumbent Finding) bool {
+	if statusRank(candidate.Status) != statusRank(incumbent.Status) {
+		return statusRank(candidate.Status) < statusRank(incumbent.Status)
+	}
+	if priorityRank(candidate.Priority) != priorityRank(incumbent.Priority) {
+		return priorityRank(candidate.Priority) < priorityRank(incumbent.Priority)
+	}
+	if sourceRank(candidate.Source) != sourceRank(incumbent.Source) {
+		return sourceRank(candidate.Source) < sourceRank(incumbent.Source)
+	}
+	if findingRichness(candidate) != findingRichness(incumbent) {
+		return findingRichness(candidate) > findingRichness(incumbent)
+	}
+	return candidate.Confidence > incumbent.Confidence
+}
+
+func priorityRank(priority string) int {
+	switch priority {
+	case "critical":
+		return 1
+	case "high":
+		return 2
+	case "medium":
+		return 3
+	case "low":
+		return 4
+	default:
+		return 50
+	}
+}
+
+func sourceRank(source string) int {
+	switch source {
+	case "failures":
+		return 1
+	case "profile":
+		return 2
+	default:
+		return 50
+	}
+}
+
+func findingRichness(item Finding) int {
+	return len(item.Jobs)*4 + item.Occurrences*3 + item.Confidence + evidenceRichness(item.Evidence)
+}
+
+func evidenceRichness(evidence string) int {
+	return len(strings.Fields(evidence))
+}
+
+func uniqueGaps(gaps []Gap) []Gap {
+	seen := map[string]bool{}
+	var result []Gap
+	for _, gap := range gaps {
+		key := gap.Type + "\x00" + gap.Message
+		if key == "\x00" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, gap)
+	}
+	return result
+}
+
 func sortFindings(items []Finding) {
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
@@ -524,6 +632,20 @@ func confidenceFromSeverity(severity string) int {
 	default:
 		return 50
 	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func workflowMatches(stored, requested string) bool {
