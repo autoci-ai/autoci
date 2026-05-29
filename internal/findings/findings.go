@@ -44,8 +44,9 @@ type Finding struct {
 	Confidence  int     `json:"confidence,omitempty"`
 	State       string  `json:"state,omitempty"`
 
-	kindRank   int
-	statusRank int
+	kindRank    int
+	statusRank  int
+	symptomRank int
 }
 
 type Gap struct {
@@ -98,6 +99,7 @@ func Load(repoPath string, options Options) ([]Finding, error) {
 	result = filterCategory(result, options)
 	result = filterStatus(result, options)
 	result = deduplicateByID(result)
+	deprioritizeCorrelatedFlakyJobs(result)
 	sortFindings(result)
 	if options.Limit > 0 && len(result) > options.Limit {
 		result = result[:options.Limit]
@@ -412,6 +414,30 @@ func mergeDuplicateFinding(a, b Finding) Finding {
 	return primary
 }
 
+func deprioritizeCorrelatedFlakyJobs(items []Finding) {
+	var themes []Finding
+	for _, item := range items {
+		if findingKind(item.ID) == "failure-theme" {
+			themes = append(themes, item)
+		}
+	}
+	if len(themes) == 0 {
+		return
+	}
+	for i := range items {
+		if findingKind(items[i].ID) != "flaky-job" {
+			continue
+		}
+		for _, theme := range themes {
+			if jobsOverlap(items[i].Jobs, theme.Jobs) {
+				items[i].symptomRank = 1
+				items[i].Evidence = appendEvidence(items[i].Evidence, fmt.Sprintf("Related failure theme on the same job: %s.", theme.ID))
+				break
+			}
+		}
+	}
+}
+
 func preferFinding(candidate, incumbent Finding) bool {
 	if statusRank(candidate.Status) != statusRank(incumbent.Status) {
 		return statusRank(candidate.Status) < statusRank(incumbent.Status)
@@ -479,6 +505,9 @@ func uniqueGaps(gaps []Gap) []Gap {
 func sortFindings(items []Finding) {
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
+		if a.symptomRank != b.symptomRank {
+			return a.symptomRank < b.symptomRank
+		}
 		if a.statusRank != b.statusRank {
 			return a.statusRank < b.statusRank
 		}
@@ -646,6 +675,35 @@ func maxFloat(a, b float64) float64 {
 		return a
 	}
 	return b
+}
+
+func jobsOverlap(a, b []string) bool {
+	for _, left := range a {
+		left = strings.TrimSpace(left)
+		if left == "" {
+			continue
+		}
+		for _, right := range b {
+			right = strings.TrimSpace(right)
+			if right == "" {
+				continue
+			}
+			if left == right {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendEvidence(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	if addition == "" || strings.Contains(existing, addition) {
+		return existing
+	}
+	return existing + " " + addition
 }
 
 func workflowMatches(stored, requested string) bool {

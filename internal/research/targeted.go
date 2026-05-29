@@ -28,6 +28,9 @@ type TargetReport struct {
 	FailureTheme             *failures.FailureTheme       `json:"failureTheme,omitempty"`
 	ProfileFinding           *profile.Finding             `json:"profileFinding,omitempty"`
 	ResearchOpportunity      *ResearchOpportunity         `json:"researchOpportunity,omitempty"`
+	RelatedFindings          []RelatedFinding             `json:"relatedFindings,omitempty"`
+	RelatedFailureThemes     []failures.FailureTheme      `json:"relatedFailureThemes,omitempty"`
+	CorrelatedFailureThemes  []failures.FailureTheme      `json:"correlatedFailureThemes,omitempty"`
 	SourceCommands           []SourceCommandData          `json:"sourceCommands,omitempty"`
 	RunIDs                   []string                     `json:"runIds,omitempty"`
 	LogExcerpts              []string                     `json:"logExcerpts,omitempty"`
@@ -44,6 +47,15 @@ type TargetReport struct {
 	CandidateFixes           []string                     `json:"candidateFixes"`
 	Readiness                lifecycle.Readiness          `json:"readiness"`
 	FixNotes                 FixNotes                     `json:"fixNotes"`
+}
+
+type RelatedFinding struct {
+	ID           string   `json:"id"`
+	Type         string   `json:"type"`
+	Workflow     string   `json:"workflow,omitempty"`
+	Jobs         []string `json:"jobs,omitempty"`
+	Relationship string   `json:"relationship"`
+	NextCommand  string   `json:"nextCommand,omitempty"`
 }
 
 type SourceCommandData struct {
@@ -85,12 +97,18 @@ type EvidenceGap struct {
 }
 
 type targetAccumulator struct {
-	id          string
-	workflow    string
-	theme       *failures.FailureTheme
-	profile     *profile.Finding
-	opportunity *ResearchOpportunity
-	sources     []SourceCommandData
+	id            string
+	workflow      string
+	theme         *failures.FailureTheme
+	profile       *profile.Finding
+	opportunity   *ResearchOpportunity
+	sources       []SourceCommandData
+	failureThemes []failureThemeSource
+}
+
+type failureThemeSource struct {
+	Workflow string
+	Theme    failures.FailureTheme
 }
 
 func Targeted(repoPath, requestedWorkflow, id string) (TargetReport, error) {
@@ -120,7 +138,9 @@ func (acc *targetAccumulator) consume(record state.SnapshotRecord) {
 		if !snapshotData(record.Snapshot, &analysis) {
 			return
 		}
+		themeWorkflow := firstNonEmpty(record.Workflow, analysis.Workflow)
 		for _, theme := range analysis.FailureThemes {
+			acc.failureThemes = append(acc.failureThemes, failureThemeSource{Workflow: themeWorkflow, Theme: theme})
 			if idsEquivalent(theme.ID, acc.id) {
 				item := theme
 				acc.theme = &item
@@ -215,6 +235,9 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 		report.Artifacts = mergeArtifactsMap(report.Artifacts, rawArtifacts(report.ResearchOpportunity.RawEvidence))
 		report.LogExcerpts = uniqueSortedCopy(append(report.LogExcerpts, report.ResearchOpportunity.RawEvidence.LogExcerpts...))
 	}
+	report.RelatedFailureThemes = acc.relatedFailureThemes(report)
+	report.CorrelatedFailureThemes = report.RelatedFailureThemes
+	report.RelatedFindings = relatedFindingsFromThemes(report.Workflow, report.RelatedFailureThemes)
 	report.WorkflowContext = workflowContext(repoPath, workflow)
 	report.CandidateSteps = candidateStepsForReport(repoPath, report)
 	report.CurrentFinding = CurrentFinding{ID: report.ID, Type: report.Type, Workflow: report.Workflow, Jobs: report.Jobs, Occurrences: report.Occurrences, Impact: report.Impact, Confidence: report.Confidence}
@@ -228,6 +251,46 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.CandidateFixes = targetedFixes(report)
 	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.Readiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
 	return report
+}
+
+func (acc *targetAccumulator) relatedFailureThemes(report TargetReport) []failures.FailureTheme {
+	if acc.profile == nil || !isFlakyJobID(report.ID) || len(report.Jobs) == 0 {
+		return nil
+	}
+	var result []failures.FailureTheme
+	for _, source := range acc.failureThemes {
+		if report.Workflow != "" && source.Workflow != "" && !workflowMatches(source.Workflow, report.Workflow) {
+			continue
+		}
+		if idsEquivalent(source.Theme.ID, report.ID) {
+			continue
+		}
+		if jobsOverlap(report.Jobs, source.Theme.Jobs) {
+			result = append(result, source.Theme)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Occurrences != result[j].Occurrences {
+			return result[i].Occurrences > result[j].Occurrences
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func relatedFindingsFromThemes(workflow string, themes []failures.FailureTheme) []RelatedFinding {
+	var result []RelatedFinding
+	for _, theme := range themes {
+		result = append(result, RelatedFinding{
+			ID:           theme.ID,
+			Type:         "failure_theme",
+			Workflow:     workflow,
+			Jobs:         uniqueSortedCopy(theme.Jobs),
+			Relationship: "overlapping_job",
+			NextCommand:  "autoci research " + theme.ID,
+		})
+	}
+	return result
 }
 
 func WriteTargetMarkdown(report TargetReport) []byte {
@@ -291,6 +354,9 @@ func targetedEvidence(report TargetReport) []string {
 	for _, line := range limitStrings(report.LogExcerpts, 6) {
 		evidence = append(evidence, "log: "+line)
 	}
+	for _, theme := range report.CorrelatedFailureThemes {
+		evidence = append(evidence, fmt.Sprintf("related failure theme: %s overlaps affected job(s) %s", theme.ID, strings.Join(overlappingJobs(report.Jobs, theme.Jobs), ", ")))
+	}
 	if len(evidence) == 0 && report.ResearchOpportunity != nil && report.ResearchOpportunity.Evidence != "" {
 		evidence = append(evidence, report.ResearchOpportunity.Evidence)
 	}
@@ -321,6 +387,9 @@ func targetedKnownFacts(report TargetReport) []string {
 		step := report.CandidateSteps[0]
 		facts = append(facts, fmt.Sprintf("Best candidate workflow step is job %s command %q with confidence %.2f.", step.Job, step.Command, step.Confidence))
 	}
+	for _, theme := range report.CorrelatedFailureThemes {
+		facts = append(facts, fmt.Sprintf("This flaky job overlaps with %s on %s.", theme.ID, markdownListValue(overlappingJobs(report.Jobs, theme.Jobs), "the affected job")))
+	}
 	if len(facts) == 0 {
 		facts = append(facts, "AutoCI found the ID in cached state, but the cached item contains limited structured evidence.")
 	}
@@ -329,6 +398,10 @@ func targetedKnownFacts(report TargetReport) []string {
 
 func targetedGaps(report TargetReport) []EvidenceGap {
 	var gaps []EvidenceGap
+	if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+		gaps = append(gaps, EvidenceGap{Type: "related_failure_theme", Message: "A more specific failure theme overlaps this flaky job; investigate that theme before treating the job as generic flakiness"})
+		return gaps
+	}
 	signature := ""
 	if report.FailureTheme != nil {
 		signature = report.FailureTheme.Signature
@@ -381,6 +454,14 @@ func gapMessages(gaps []EvidenceGap) []string {
 }
 
 func targetedHypotheses(report TargetReport) []RootCauseHypothesis {
+	if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+		theme := report.CorrelatedFailureThemes[0]
+		return []RootCauseHypothesis{{
+			Summary:    fmt.Sprintf("The apparent flakiness may be a symptom of %s rather than an independent flaky job.", theme.ID),
+			Confidence: 75,
+			Evidence:   []string{fmt.Sprintf("%s and %s both affect %s.", report.ID, theme.ID, markdownListValue(overlappingJobs(report.Jobs, theme.Jobs), "the same job"))},
+		}}
+	}
 	if report.ResearchOpportunity != nil && len(report.ResearchOpportunity.Hypotheses) > 0 {
 		return report.ResearchOpportunity.Hypotheses
 	}
@@ -398,6 +479,13 @@ func targetedHypotheses(report TargetReport) []RootCauseHypothesis {
 }
 
 func targetedInvestigation(report TargetReport) []string {
+	if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+		theme := report.CorrelatedFailureThemes[0]
+		return []string{
+			fmt.Sprintf("Run `autoci research %s` and investigate the specific failure theme before treating %s as generic flakiness.", theme.ID, report.ID),
+			fmt.Sprintf("Fix or instrument %s first, then rerun profile/failures to see whether %s still appears independently.", theme.ID, report.ID),
+		}
+	}
 	if report.Readiness == lifecycle.ReadinessNeedsMoreEvidence && len(report.Gaps) > 0 {
 		return append([]string{"Generate an instrumentation patch to capture the missing evidence before assigning a root cause."}, targetedEvidenceInvestigation(report)...)
 	}
@@ -445,6 +533,10 @@ func targetedEvidenceInvestigation(report TargetReport) []string {
 }
 
 func targetedFixes(report TargetReport) []string {
+	if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+		theme := report.CorrelatedFailureThemes[0]
+		return []string{fmt.Sprintf("Do not patch %s directly yet; research and address %s first.", report.ID, theme.ID)}
+	}
 	if report.Readiness == lifecycle.ReadinessNeedsMoreEvidence && len(report.Gaps) > 0 {
 		return []string{"Generate an instrumentation patch that records the missing evidence; do not apply a root-cause workflow fix yet."}
 	}
@@ -482,6 +574,9 @@ func targetedFixes(report TargetReport) []string {
 
 func targetedReadiness(report TargetReport) lifecycle.Readiness {
 	if report.ProfileFinding != nil && report.FailureTheme == nil {
+		if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+			return lifecycle.ReadinessNeedsMoreEvidence
+		}
 		return lifecycle.ReadinessNotReady
 	}
 	if report.FailureTheme == nil {
@@ -556,6 +651,9 @@ func summaryForTarget(report TargetReport) string {
 		return fmt.Sprintf("AutoCI found %s affecting %s and prepared an offline investigation brief from cached CI evidence.", report.FailureTheme.Signature, markdownListValue(report.Jobs, "the affected jobs"))
 	}
 	if report.ProfileFinding != nil {
+		if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
+			return fmt.Sprintf("AutoCI found flaky-job signal for %s, but it overlaps with a more specific failure theme. Investigate the specific failure theme before treating this as generic flakiness.", markdownListValue(report.Jobs, fallback(report.Workflow, "the workflow")))
+		}
 		return fmt.Sprintf("AutoCI found a profile finding for %s and prepared an offline investigation brief from cached runtime data.", markdownListValue(report.Jobs, fallback(report.Workflow, "the workflow")))
 	}
 	if report.ResearchOpportunity != nil {
@@ -671,6 +769,44 @@ func stableTargetID(requested string, theme *failures.FailureTheme, finding *pro
 		return opportunity.ID
 	}
 	return requested
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func isFlakyJobID(id string) bool {
+	return id == "flaky-job" || strings.HasPrefix(id, "flaky-job-")
+}
+
+func jobsOverlap(a, b []string) bool {
+	return len(overlappingJobs(a, b)) > 0
+}
+
+func overlappingJobs(a, b []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, left := range a {
+		left = strings.TrimSpace(left)
+		if left == "" {
+			continue
+		}
+		for _, right := range b {
+			right = strings.TrimSpace(right)
+			if right == "" || left != right || seen[left] {
+				continue
+			}
+			seen[left] = true
+			result = append(result, left)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func workflowMatches(stored, requested string) bool {

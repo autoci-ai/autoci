@@ -9,6 +9,7 @@ import (
 
 	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/lifecycle"
+	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/state"
 )
 
@@ -227,6 +228,63 @@ func TestTargetedResearchSnykIntegrityNeedsMoreEvidence(t *testing.T) {
 		"Generate an instrumentation patch",
 		"Snyk install/download diagnostics",
 		"cannot select a safe surgical workflow patch",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestTargetedResearchCorrelatesFlakyJobWithFailureTheme(t *testing.T) {
+	dir := t.TempDir()
+	analysis := failures.Analysis{
+		Workflow: "pr.yml",
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-npm-install-failure",
+			Signature:   "npm install failure",
+			Occurrences: 2,
+			Jobs:        []string{"frontend-unit-test"},
+		}},
+	}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+	prof := &profile.Profile{Findings: []profile.Finding{{
+		ID:       "flaky-job-frontend-unit-test",
+		Title:    "Flaky job",
+		Severity: "high",
+		Workflow: "pr.yml",
+		Job:      "frontend-unit-test",
+		Evidence: "Failure rate 20% across 10 runs.",
+	}}}
+	if err := state.Write(dir, "profile", "pr.yml", prof); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Targeted(dir, "", "flaky-job-frontend-unit-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
+		t.Fatalf("readiness = %q", report.Readiness)
+	}
+	if len(report.RelatedFindings) != 1 || report.RelatedFindings[0].ID != "failure-theme-npm-install-failure" {
+		t.Fatalf("related findings = %#v", report.RelatedFindings)
+	}
+	if len(report.RelatedFailureThemes) != 1 || len(report.CorrelatedFailureThemes) != 1 {
+		t.Fatalf("related themes = %#v correlated = %#v", report.RelatedFailureThemes, report.CorrelatedFailureThemes)
+	}
+	if len(report.RecommendedInvestigation) == 0 || !strings.Contains(report.RecommendedInvestigation[0], "autoci research failure-theme-npm-install-failure") {
+		t.Fatalf("next steps = %#v", report.RecommendedInvestigation)
+	}
+	if !hasGapType(report.Gaps, "related_failure_theme") {
+		t.Fatalf("gaps = %#v", report.Gaps)
+	}
+	markdown := string(WriteTargetMarkdown(report))
+	for _, want := range []string{
+		"This flaky job overlaps with failure-theme-npm-install-failure",
+		"Investigate the specific failure theme before treating this as generic flakiness",
+		"autoci research failure-theme-npm-install-failure",
 	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, markdown)

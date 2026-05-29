@@ -85,6 +85,27 @@ func TestFindingsDeduplicatesByStableID(t *testing.T) {
 	}
 }
 
+func TestFindingsRanksSpecificFailureThemeAboveCorrelatedFlakyJob(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsFlakyFrontendProfileState(t, dir)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items)
+	failureIndex := indexFindingJSON(items, "failure-theme-npm-install-failure")
+	flakyIndex := indexFindingJSON(items, "flaky-job-frontend-unit-test")
+	if failureIndex < 0 || flakyIndex < 0 {
+		t.Fatalf("expected both findings, got %#v", items)
+	}
+	if failureIndex > flakyIndex {
+		t.Fatalf("flaky job ranked above specific failure theme: %#v", items)
+	}
+	flaky := items[flakyIndex]
+	if !strings.Contains(flaky.Evidence, "Related failure theme on the same job: failure-theme-npm-install-failure.") {
+		t.Fatalf("flaky finding did not record related theme evidence: %#v", flaky)
+	}
+}
+
 func TestFindingsLimitAndNext(t *testing.T) {
 	dir := t.TempDir()
 	writeFindingsFailureState(t, dir)
@@ -386,6 +407,20 @@ func writeFindingsRepeatedFailureProfileState(t *testing.T, dir string) {
 	}
 }
 
+func writeFindingsFlakyFrontendProfileState(t *testing.T, dir string) {
+	t.Helper()
+	prof := &profile.Profile{Findings: []profile.Finding{{
+		ID:       "flaky-job-frontend-unit-test",
+		Severity: "high",
+		Workflow: "pr.yml",
+		Job:      "frontend-unit-test",
+		Evidence: "Failure rate 20% across 10 runs.",
+	}}}
+	if err := state.Write(dir, "profile", "pr.yml", prof); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeFindingsResearchState(t *testing.T, dir, id string, readiness lifecycle.Readiness, gaps []map[string]string, nextSteps []string) {
 	t.Helper()
 	evidence := map[string]any{
@@ -431,4 +466,13 @@ func containsFindingJSON(items []findingJSON, id string) bool {
 		}
 	}
 	return false
+}
+
+func indexFindingJSON(items []findingJSON, id string) int {
+	for i, item := range items {
+		if item.ID == id {
+			return i
+		}
+	}
+	return -1
 }
