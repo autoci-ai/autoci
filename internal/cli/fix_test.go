@@ -565,7 +565,7 @@ func assertJSONOnlyAndJQ(t *testing.T, output string, target any) {
 
 func readFixRecord(t *testing.T, dir string) (fixRecordSnapshot, string) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, ".autoci", "fixes", "fix-npm-install-failure.json"))
+	data, err := os.ReadFile(filepath.Join(dir, ".autoci", "fixes", "failure-theme-npm-install-failure.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

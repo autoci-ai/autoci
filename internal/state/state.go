@@ -118,6 +118,10 @@ func WriteFix(repoPath string, data any) error {
 	if id == "" {
 		id = "fix"
 	}
+	key := extractSourceID(data)
+	if key == "" {
+		key = id
+	}
 	payload, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return err
@@ -136,7 +140,23 @@ func WriteFix(repoPath string, data any) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, slug(id)+".json"), append(out, '\n'), 0o644)
+	path := filepath.Join(dir, slug(key)+".json")
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		return err
+	}
+	legacyPath := filepath.Join(dir, slug(id)+".json")
+	if legacyPath != path {
+		_ = os.Remove(legacyPath)
+	}
+	return nil
+}
+
+func ReadFix(repoPath, sourceID string) (Snapshot, error) {
+	dir := filepath.Join(repoPath, ".autoci", "fixes")
+	if snapshot, err := readSnapshotFile(filepath.Join(dir, slug(sourceID)+".json")); err == nil {
+		return snapshot, nil
+	}
+	return readSnapshotFile(filepath.Join(dir, slug(legacyFixID(sourceID))+".json"))
 }
 
 func FindItem(repoPath, workflow, id string) (StoredItem, bool) {
@@ -160,7 +180,11 @@ func FindItem(repoPath, workflow, id string) (StoredItem, bool) {
 }
 
 func Read(repoPath, command, workflow string) (Snapshot, error) {
-	data, err := os.ReadFile(filepath.Join(repoPath, ".autoci", command, WorkflowFile(workflow)))
+	return readSnapshotFile(filepath.Join(repoPath, ".autoci", command, WorkflowFile(workflow)))
+}
+
+func readSnapshotFile(path string) (Snapshot, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -328,6 +352,34 @@ func extractID(data any) string {
 		return ""
 	}
 	return stringValue(object["id"])
+}
+
+func extractSourceID(data any) string {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return ""
+	}
+	var object map[string]any
+	if err := json.Unmarshal(encoded, &object); err != nil {
+		return ""
+	}
+	if sourceID := stringValue(object["sourceId"]); sourceID != "" {
+		return sourceID
+	}
+	return stringValue(object["sourceItemId"])
+}
+
+func legacyFixID(sourceID string) string {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" {
+		return "fix"
+	}
+	if strings.HasPrefix(sourceID, "fix-") {
+		return sourceID
+	}
+	sourceID = strings.TrimPrefix(sourceID, "failure-theme-")
+	sourceID = strings.TrimPrefix(sourceID, "theme-")
+	return "fix-" + sourceID
 }
 
 func stringValue(value any) string {

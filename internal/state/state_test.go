@@ -1,6 +1,9 @@
 package state
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -140,4 +143,97 @@ func TestUpdateTargetedResearchReadiness(t *testing.T) {
 	if stored.Readiness != "validated" || stored.FixNotes.Readiness != "validated" {
 		t.Fatalf("readiness not updated: %#v", stored)
 	}
+}
+
+func TestWriteFixUsesSourceIDStablePath(t *testing.T) {
+	for _, sourceField := range []string{"sourceId", "sourceItemId"} {
+		t.Run(sourceField, func(t *testing.T) {
+			dir := t.TempDir()
+			record := map[string]any{
+				"id":        "fix-image-pull-failure",
+				sourceField: "failure-theme-image-pull-failure",
+				"workflow":  "pr.yml",
+			}
+			if err := WriteFix(dir, record); err != nil {
+				t.Fatal(err)
+			}
+			newPath := filepath.Join(dir, ".autoci", "fixes", "failure-theme-image-pull-failure.json")
+			if _, err := os.Stat(newPath); err != nil {
+				t.Fatalf("expected source-ID fix artifact at %s: %v", newPath, err)
+			}
+			oldPath := filepath.Join(dir, ".autoci", "fixes", "fix-image-pull-failure.json")
+			if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+				t.Fatalf("legacy fix artifact should not exist at %s", oldPath)
+			}
+			snapshot, err := ReadFix(dir, "failure-theme-image-pull-failure")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stored map[string]any
+			if !snapshotData(snapshot.Data, &stored) {
+				t.Fatalf("could not decode fix snapshot: %#v", snapshot)
+			}
+			if stored["id"] != "fix-image-pull-failure" || stored[sourceField] != "failure-theme-image-pull-failure" {
+				t.Fatalf("stored fix data changed: %#v", stored)
+			}
+		})
+	}
+}
+
+func TestReadFixFallsBackToLegacyFixIDPath(t *testing.T) {
+	dir := t.TempDir()
+	legacy := map[string]any{
+		"id":       "fix-image-pull-failure",
+		"workflow": "pr.yml",
+	}
+	if err := WriteFix(dir, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".autoci", "fixes", "fix-image-pull-failure.json")); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ReadFix(dir, "failure-theme-image-pull-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored struct {
+		ID string `json:"id"`
+	}
+	if !snapshotData(snapshot.Data, &stored) {
+		t.Fatalf("could not decode fix snapshot: %#v", snapshot)
+	}
+	if stored.ID != "fix-image-pull-failure" {
+		t.Fatalf("stored ID = %q", stored.ID)
+	}
+}
+
+func TestWriteFixRemovesLegacyFixIDArtifact(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteFix(dir, map[string]any{
+		"id":       "fix-image-pull-failure",
+		"workflow": "pr.yml",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFix(dir, map[string]any{
+		"id":           "fix-image-pull-failure",
+		"sourceItemId": "failure-theme-image-pull-failure",
+		"workflow":     "pr.yml",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".autoci", "fixes", "fix-image-pull-failure.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy artifact was not removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".autoci", "fixes", "failure-theme-image-pull-failure.json")); err != nil {
+		t.Fatalf("source artifact missing: %v", err)
+	}
+}
+
+func snapshotData(value any, target any) bool {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
 }
