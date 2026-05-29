@@ -169,6 +169,15 @@ func TestWeakImagePullEvidenceDoesNotAssertRootCause(t *testing.T) {
 			t.Fatalf("weak hypothesis asserted %q: %q", forbidden, opportunity.Hypothesis)
 		}
 	}
+	combined := opportunity.Experiment + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	for _, forbidden := range []string{"affected image references", "registries and jobs", "registry access", "mutable tags"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("weak image opportunity implied missing evidence %q: %s", forbidden, combined)
+		}
+	}
+	if !strings.Contains(opportunity.Experiment, "exact failing image/container setup step") {
+		t.Fatalf("expected thin-evidence experiment, got %q", opportunity.Experiment)
+	}
 }
 
 func TestWeakNPMEvidenceDoesNotAssertRootCause(t *testing.T) {
@@ -189,6 +198,66 @@ func TestWeakNPMEvidenceDoesNotAssertRootCause(t *testing.T) {
 	for _, forbidden := range []string{"peer constraints disagree", "registry access", "lockfile state"} {
 		if strings.Contains(opportunity.Hypothesis, forbidden) {
 			t.Fatalf("weak npm hypothesis asserted %q: %q", forbidden, opportunity.Hypothesis)
+		}
+	}
+	combined := opportunity.Experiment + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	for _, forbidden := range []string{"affected packages", "registry URLs", "lockfile and dependency cache"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("weak npm opportunity implied missing evidence %q: %s", forbidden, combined)
+		}
+	}
+	if !strings.Contains(opportunity.Experiment, "exact package, dependency constraint, registry URL, or package-manager error") {
+		t.Fatalf("expected thin-evidence npm experiment, got %q", opportunity.Experiment)
+	}
+}
+
+func TestStrongImagePullEvidenceUsesConcreteArtifacts(t *testing.T) {
+	failureAnalysis := &failures.Analysis{FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-image-pull-failure",
+		Signature:   "image pull failure",
+		Occurrences: 2,
+		Jobs:        []string{"integration"},
+		Evidence: []failures.FailureEvidence{{
+			Job:          "integration",
+			Image:        "mysql:8.0",
+			Registry:     "docker.io",
+			RegistryHost: "docker.io",
+			LogExcerpt:   "failed to pull image mysql:8.0 from docker.io: manifest unknown",
+			PullError:    "manifest unknown",
+		}},
+	}}}
+
+	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
+	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.WhyWeBelieveThis, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	for _, want := range []string{"mysql:8.0", "docker.io"} {
+		if !strings.Contains(combined, want) {
+			t.Fatalf("expected strong image evidence %q in opportunity: %#v", want, opportunity)
+		}
+	}
+}
+
+func TestStrongNPMEvidenceUsesCleanPackagesOnly(t *testing.T) {
+	failureAnalysis := &failures.Analysis{FailureThemes: []failures.FailureTheme{{
+		ID:          "failure-theme-npm-install-failure",
+		Signature:   "npm install failure",
+		Occurrences: 2,
+		Jobs:        []string{"frontend"},
+		Evidence: []failures.FailureEvidence{{
+			Job:          "frontend",
+			PackageName:  "msw",
+			InstallError: "yarn install failed: ERESOLVE peer dependency conflict for msw",
+			LogExcerpt:   "yarn install failed: ERESOLVE peer dependency conflict for msw",
+		}},
+	}}}
+
+	opportunity := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true).Opportunities[0]
+	combined := opportunity.Hypothesis + "\n" + strings.Join(opportunity.WhyWeBelieveThis, "\n") + "\n" + strings.Join(opportunity.InvestigationSteps, "\n")
+	if !strings.Contains(combined, "msw") {
+		t.Fatalf("expected clean package evidence in opportunity: %#v", opportunity)
+	}
+	for _, bad := range []string{"173mcore-js", "90mYN0000", "31mSTDERR", "--immutable", "six-letter", "p-prefixed", "your", "because", "home/runner"} {
+		if strings.Contains(combined, bad) {
+			t.Fatalf("bad npm token leaked into opportunity: %q in %s", bad, combined)
 		}
 	}
 }

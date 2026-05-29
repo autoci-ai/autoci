@@ -323,7 +323,7 @@ func opportunityFromFailureTheme(workflowName string, theme failures.FailureThem
 		Hypotheses:          hypotheses,
 		InvestigationSteps:  steps,
 		SupportingArtifacts: artifacts,
-		Experiment:          experimentForFailureTheme(theme),
+		Experiment:          experimentForFailureTheme(theme, raw),
 		SuccessCriteria:     "The failure theme no longer recurs in recent failed runs or the root cause is identified.",
 		Risk:                "Low",
 		EstimatedImpact:     "Reduces repeated CI failures caused by the same root cause.",
@@ -395,12 +395,18 @@ func failureThemeEvidence(theme failures.FailureTheme) string {
 	return fmt.Sprintf("%d occurrences.", theme.Occurrences)
 }
 
-func experimentForFailureTheme(theme failures.FailureTheme) string {
+func experimentForFailureTheme(theme failures.FailureTheme, raw RawEvidence) string {
 	switch theme.Signature {
 	case "image pull failure", "image pull timeout":
-		return "Compare failed and successful runs for the affected image references, registries, and jobs to isolate whether registry access, mutable tags, or pull policy changed."
+		if len(raw.Images) == 0 && len(raw.Registries) == 0 {
+			return "Inspect failed job logs for the affected jobs and compare them with successful runs to identify the exact failing image/container setup step before assigning a registry, tag, auth, or cache root cause."
+		}
+		return "Compare failed and successful runs for the evidenced image/container setup details and affected jobs before assigning a registry, tag, auth, or cache root cause."
 	case "npm install failure":
-		return "Compare dependency install logs across failed and successful runs using the affected packages, registry URLs, and jobs as the join keys."
+		if len(raw.Modules) == 0 && len(raw.URLs) == 0 {
+			return "Inspect failed dependency install logs for the affected jobs and compare them with successful runs to identify the exact package, dependency constraint, registry URL, or package-manager error before assigning root cause."
+		}
+		return "Compare dependency install logs across failed and successful runs using only the evidenced packages, registry URLs, and affected jobs as join keys."
 	default:
 		return "Compare affected jobs and failed-run evidence to identify the shared root cause before changing workflow behavior."
 	}
@@ -578,7 +584,7 @@ func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
 	}
 	var hypotheses []RootCauseHypothesis
 	if hasAnyEvidenceToken(raw, []string{"eresolve", "peer"}) {
-		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s because the lockfile and package peer constraints disagree.", packages), Confidence: 78, Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})})
+		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Dependency resolution is failing for %s with resolver or peer-dependency conflict evidence.", packages), Confidence: 78, Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})})
 	}
 	if len(raw.URLs) > 0 && hasAnyEvidenceToken(raw, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "registry", "http", "https"}) {
 		hypotheses = append(hypotheses, RootCauseHypothesis{Summary: fmt.Sprintf("Install failures may correlate with access to %s.", registry), Confidence: 68, Evidence: append(raw.URLs, failureEvidenceSnippets(raw)...)})
@@ -625,6 +631,11 @@ func investigationStepsForFailureTheme(theme failures.FailureTheme, raw RawEvide
 
 func imagePullInvestigationSteps(raw RawEvidence) []string {
 	var steps []string
+	if len(raw.Images) == 0 && len(raw.Registries) == 0 {
+		steps = append(steps, fmt.Sprintf("Inspect failed job logs for %s to identify the exact failing image/container setup step.", joinOrFallback(raw.Jobs, "the affected jobs")))
+		steps = append(steps, "Compare those failed logs with successful runs before assigning a registry, tag, auth, or cache root cause.")
+		return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+	}
 	for _, image := range raw.Images {
 		steps = append(steps, fmt.Sprintf("Check failed pulls for %s in jobs %s.", image, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
 	}
@@ -639,13 +650,22 @@ func imagePullInvestigationSteps(raw RawEvidence) []string {
 
 func npmInvestigationSteps(raw RawEvidence) []string {
 	var steps []string
+	if len(raw.Modules) == 0 && len(raw.URLs) == 0 {
+		steps = append(steps, fmt.Sprintf("Inspect failed dependency install logs for %s to identify the exact package, dependency constraint, registry URL, or package-manager error.", joinOrFallback(raw.Jobs, "the affected jobs")))
+		steps = append(steps, "Compare those failed install logs with successful runs before assigning a lockfile, package, registry, or cache root cause.")
+		return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+	}
 	for _, module := range raw.Modules {
 		steps = append(steps, fmt.Sprintf("Inspect dependency resolution for %s in affected jobs %s.", module, joinOrFallback(raw.Jobs, "from the cached failure evidence")))
 	}
 	for _, url := range raw.URLs {
 		steps = append(steps, fmt.Sprintf("Check whether failed installs correlate with registry access to %s.", url))
 	}
-	steps = append(steps, "Compare package lockfile and dependency cache state between failed and successful runs for the affected jobs.")
+	if len(raw.Modules) > 0 && hasAnyEvidenceToken(raw, []string{"lockfile", "immutable", "would have been modified"}) {
+		steps = append(steps, "Compare package lockfile and dependency cache state between failed and successful runs for the affected jobs.")
+	} else if len(raw.Modules) > 0 {
+		steps = append(steps, "Compare dependency install logs between failed and successful runs for the evidenced packages.")
+	}
 	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
 }
 
