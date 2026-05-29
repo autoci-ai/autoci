@@ -202,6 +202,11 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	if !(checkoutIndex < testIndex && testIndex < diagnosticsIndex) {
 		t.Fatalf("instrumentation was not appended after existing steps:\n%s", patched)
 	}
+	for _, unchanged := range []string{"-      - run: go test ./...", "+      - run: go test ./..."} {
+		if strings.Contains(plan.Diff, unchanged) {
+			t.Fatalf("diff rewrote unchanged neighboring line %q:\n%s", unchanged, plan.Diff)
+		}
+	}
 	if strings.Contains(plan.Diff, "unrelated-job") {
 		t.Fatalf("diff touched unrelated job:\n%s", plan.Diff)
 	}

@@ -813,11 +813,25 @@ func multiLineDiff(path, original string, replacements map[int]string) string {
 			start = 1
 		}
 		end := line
-		fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", start, end-start+1, start, end-start+1)
+		oldCount := end - start + 1
+		newCount := oldCount
+		replacementLines := strings.Split(replacements[line], "\n")
+		insertAfter := len(replacementLines) > 0 && replacementLines[0] == lines[line-1]
+		if insertAfter {
+			newCount += len(replacementLines) - 1
+		}
+		fmt.Fprintf(&builder, "@@ -%d,%d +%d,%d @@\n", start, oldCount, start, newCount)
 		for i := start; i <= end; i++ {
 			if i == line {
+				if insertAfter {
+					fmt.Fprintf(&builder, " %s\n", lines[i-1])
+					for _, added := range replacementLines[1:] {
+						fmt.Fprintf(&builder, "+%s\n", added)
+					}
+					continue
+				}
 				fmt.Fprintf(&builder, "-%s\n", lines[i-1])
-				for _, added := range strings.Split(replacements[line], "\n") {
+				for _, added := range replacementLines {
 					fmt.Fprintf(&builder, "+%s\n", added)
 				}
 				continue
