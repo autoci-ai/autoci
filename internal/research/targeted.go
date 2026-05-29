@@ -44,6 +44,7 @@ type TargetReport struct {
 	Gaps                     []EvidenceGap                `json:"gaps,omitempty"`
 	RootCauseHypotheses      []RootCauseHypothesis        `json:"rootCauseHypotheses"`
 	RecommendedInvestigation []string                     `json:"recommendedInvestigation"`
+	NextSteps                []string                     `json:"nextSteps,omitempty"`
 	CandidateFixes           []string                     `json:"candidateFixes"`
 	Readiness                lifecycle.Readiness          `json:"readiness"`
 	FixNotes                 FixNotes                     `json:"fixNotes"`
@@ -248,6 +249,7 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.RootCauseHypotheses = targetedHypotheses(report)
 	report.Readiness = targetedReadiness(report)
 	report.RecommendedInvestigation = targetedInvestigation(report)
+	report.NextSteps = report.RecommendedInvestigation
 	report.CandidateFixes = targetedFixes(report)
 	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.Readiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
 	return report
@@ -306,6 +308,7 @@ func WriteTargetMarkdown(report TargetReport) []byte {
 	fmt.Fprintf(&out, "- Occurrences / impact: %s\n", occurrencesImpact(report))
 	fmt.Fprintf(&out, "- Confidence: `%d`\n\n", report.CurrentFinding.Confidence)
 	writeMarkdownSection(&out, "Evidence", report.Evidence)
+	writeRelatedFindings(&out, report.RelatedFindings)
 	writeCandidateSteps(&out, report.CandidateSteps)
 	writeMarkdownSection(&out, "What we know", report.WhatWeKnow)
 	writeMarkdownSection(&out, "What we do not know yet", report.WhatWeDoNotKnowYet)
@@ -331,6 +334,22 @@ func WriteTargetMarkdown(report TargetReport) []byte {
 	fmt.Fprintln(&out, string(encoded))
 	fmt.Fprintln(&out, "```")
 	return out.Bytes()
+}
+
+func writeRelatedFindings(out *bytes.Buffer, related []RelatedFinding) {
+	if len(related) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "## Related findings")
+	for _, item := range related {
+		jobs := markdownListValue(item.Jobs, "unknown")
+		if item.NextCommand != "" {
+			fmt.Fprintf(out, "- `%s` (%s, %s): %s. Next: `%s`\n", item.ID, item.Type, jobs, item.Relationship, item.NextCommand)
+			continue
+		}
+		fmt.Fprintf(out, "- `%s` (%s, %s): %s\n", item.ID, item.Type, jobs, item.Relationship)
+	}
+	fmt.Fprintln(out)
 }
 
 func targetedEvidence(report TargetReport) []string {
@@ -482,8 +501,8 @@ func targetedInvestigation(report TargetReport) []string {
 	if isFlakyJobID(report.ID) && len(report.CorrelatedFailureThemes) > 0 {
 		theme := report.CorrelatedFailureThemes[0]
 		return []string{
-			fmt.Sprintf("Run `autoci research %s` and investigate the specific failure theme before treating %s as generic flakiness.", theme.ID, report.ID),
-			fmt.Sprintf("Fix or instrument %s first, then rerun profile/failures to see whether %s still appears independently.", theme.ID, report.ID),
+			fmt.Sprintf("Research the related failure theme first: autoci research %s", theme.ID),
+			fmt.Sprintf("Do not treat %s as generic flakiness until %s is resolved or ruled out.", markdownListValue(report.Jobs, report.ID), theme.ID),
 		}
 	}
 	if report.Readiness == lifecycle.ReadinessNeedsMoreEvidence && len(report.Gaps) > 0 {

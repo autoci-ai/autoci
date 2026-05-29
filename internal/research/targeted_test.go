@@ -274,16 +274,25 @@ func TestTargetedResearchCorrelatesFlakyJobWithFailureTheme(t *testing.T) {
 	if len(report.RelatedFailureThemes) != 1 || len(report.CorrelatedFailureThemes) != 1 {
 		t.Fatalf("related themes = %#v correlated = %#v", report.RelatedFailureThemes, report.CorrelatedFailureThemes)
 	}
-	if len(report.RecommendedInvestigation) == 0 || !strings.Contains(report.RecommendedInvestigation[0], "autoci research failure-theme-npm-install-failure") {
-		t.Fatalf("next steps = %#v", report.RecommendedInvestigation)
+	if len(report.NextSteps) == 0 || !strings.Contains(report.NextSteps[0], "autoci research failure-theme-npm-install-failure") {
+		t.Fatalf("next steps = %#v", report.NextSteps)
+	}
+	if len(report.RelatedFindings) > 0 && len(report.NextSteps) == 0 {
+		t.Fatalf("related findings should imply next steps")
+	}
+	if len(report.RecommendedInvestigation) != len(report.NextSteps) || report.RecommendedInvestigation[0] != report.NextSteps[0] {
+		t.Fatalf("recommended investigation and next steps diverged: %#v %#v", report.RecommendedInvestigation, report.NextSteps)
 	}
 	if !hasGapType(report.Gaps, "related_failure_theme") {
 		t.Fatalf("gaps = %#v", report.Gaps)
 	}
 	markdown := string(WriteTargetMarkdown(report))
 	for _, want := range []string{
+		"## Related findings",
+		"`failure-theme-npm-install-failure`",
 		"This flaky job overlaps with failure-theme-npm-install-failure",
 		"Investigate the specific failure theme before treating this as generic flakiness",
+		"Research the related failure theme first: autoci research failure-theme-npm-install-failure",
 		"autoci research failure-theme-npm-install-failure",
 	} {
 		if !strings.Contains(markdown, want) {
