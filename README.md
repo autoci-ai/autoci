@@ -22,6 +22,13 @@ Analyze a specific path:
 autoci analyze --path .
 ```
 
+Analyze a specific Depot workflow:
+
+```bash
+autoci analyze --workflow pr.yml
+autoci analyze --workflow .depot/workflows/pr.yml
+```
+
 Write a Markdown report:
 
 ```bash
@@ -32,6 +39,12 @@ Generate a runtime profile from recent Depot CI workflow history:
 
 ```bash
 autoci profile
+```
+
+Profile a specific Depot workflow:
+
+```bash
+autoci profile --workflow pr.yml
 ```
 
 Write a Markdown runtime profile:
@@ -89,5 +102,8 @@ Useful options:
 ```bash
 autoci profile --limit 100
 autoci profile --repo owner/name
+autoci profile --workflow pr.yml
 autoci profile --report profile.md
 ```
+
+Workflow selection is explicit. AutoCI discovers workflows from `.depot/workflows/*.yml` and `.depot/workflows/*.yaml`. If exactly one workflow exists, `analyze` and `profile` select it automatically. If multiple workflows exist, pass `--workflow` with either the basename, such as `pr.yml`, or the repo-relative path, such as `.depot/workflows/pr.yml`.

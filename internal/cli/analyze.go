@@ -28,18 +28,22 @@ func newAnalyzeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			workflow, err := scanner.SelectWorkflow(cfg.Path, workflows, viper.GetString("workflow"), "analyze")
+			if err != nil {
+				return err
+			}
 
-			findings := rules.Evaluate(workflows)
+			analysis := rules.AnalyzeWorkflow(scanner.WorkflowName(cfg.Path, workflow), workflow)
 			if format == "markdown" {
-				if err := report.WriteMarkdown(cmd.OutOrStdout(), workflows, findings); err != nil {
+				if err := report.WriteMarkdown(cmd.OutOrStdout(), analysis); err != nil {
 					return err
 				}
 			} else {
-				report.WriteTerminal(cmd.OutOrStdout(), workflows, findings)
+				report.WriteTerminal(cmd.OutOrStdout(), analysis)
 			}
 
 			if reportPath != "" {
-				return report.WriteMarkdownFile(reportPath, workflows, findings)
+				return report.WriteMarkdownFile(reportPath, analysis)
 			}
 			return nil
 		},
@@ -47,8 +51,10 @@ func newAnalyzeCommand() *cobra.Command {
 
 	cmd.Flags().String("report", "", "write a Markdown report to this path")
 	cmd.Flags().String("format", "text", "output format: text or markdown")
+	cmd.Flags().String("workflow", "", "Depot workflow to analyze by basename or relative path")
 	_ = viper.BindPFlag("report", cmd.Flags().Lookup("report"))
 	_ = viper.BindPFlag("format", cmd.Flags().Lookup("format"))
+	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
 
 	return cmd
 }

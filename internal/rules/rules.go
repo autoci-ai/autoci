@@ -19,6 +19,18 @@ type Finding struct {
 	Recommendation string
 }
 
+type Analysis struct {
+	Workflow string
+	Findings []Finding
+}
+
+func AnalyzeWorkflow(name string, workflow scanner.Workflow) Analysis {
+	return Analysis{
+		Workflow: name,
+		Findings: Evaluate([]scanner.Workflow{workflow}),
+	}
+}
+
 func Evaluate(workflows []scanner.Workflow) []Finding {
 	var findings []Finding
 	for _, workflow := range workflows {

@@ -87,22 +87,42 @@ func (p DepotProvider) filterToLocalWorkflows(items []workflowListItem) []workfl
 	}
 	paths := map[string]bool{}
 	for _, workflow := range p.LocalWorkflows {
-		path := strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(workflow.Path, "\\", "/")), "./")
-		paths[path] = true
-		paths[strings.TrimPrefix(path, ".depot/workflows/")] = true
-		paths[strings.TrimPrefix(path, ".depot/")] = true
+		for _, path := range []string{
+			workflow.Path,
+			scanner.WorkflowName(p.RepoPath, workflow),
+		} {
+			addWorkflowPathAliases(paths, path)
+		}
 	}
 	var filtered []workflowListItem
 	for _, item := range items {
-		path := strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(item.WorkflowPath, "\\", "/")), "./")
-		if paths[path] || paths[strings.TrimPrefix(path, ".depot/workflows/")] || paths[strings.TrimPrefix(path, ".depot/")] {
+		path := normalizeWorkflowPath(item.WorkflowPath)
+		if paths[path] {
 			filtered = append(filtered, item)
 		}
 	}
-	if len(filtered) == 0 {
-		return items
-	}
 	return filtered
+}
+
+func addWorkflowPathAliases(paths map[string]bool, path string) {
+	normalized := normalizeWorkflowPath(path)
+	if normalized == "" {
+		return
+	}
+	paths[normalized] = true
+	paths[strings.TrimPrefix(normalized, ".depot/workflows/")] = true
+	paths[strings.TrimPrefix(normalized, ".depot/")] = true
+	paths[normalizeWorkflowPath(filepathBase(normalized))] = true
+}
+
+func normalizeWorkflowPath(path string) string {
+	path = strings.TrimPrefix(strings.ToLower(strings.ReplaceAll(path, "\\", "/")), "./")
+	return path
+}
+
+func filepathBase(path string) string {
+	parts := strings.Split(path, "/")
+	return parts[len(parts)-1]
 }
 
 func runDepot(ctx context.Context, dir string, args ...string) ([]byte, error) {

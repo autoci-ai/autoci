@@ -7,38 +7,30 @@ import (
 	"path/filepath"
 
 	"github.com/autoci-ai/autoci/internal/rules"
-	"github.com/autoci-ai/autoci/internal/scanner"
 )
 
-func WriteMarkdownFile(path string, workflows []scanner.Workflow, findings []rules.Finding) error {
+func WriteMarkdownFile(path string, analysis rules.Analysis) error {
 	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	return WriteMarkdown(file, workflows, findings)
+	return WriteMarkdown(file, analysis)
 }
 
-func WriteMarkdown(w io.Writer, workflows []scanner.Workflow, findings []rules.Finding) error {
+func WriteMarkdown(w io.Writer, analysis rules.Analysis) error {
 	if _, err := fmt.Fprintln(w, "# Autoci Depot CI Analysis"); err != nil {
 		return err
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "## Workflows Detected\n\n")
-	if len(workflows) == 0 {
-		fmt.Fprintln(w, "No Depot CI workflow files were detected.")
-	} else {
-		for _, workflow := range workflows {
-			fmt.Fprintf(w, "- `%s`\n", filepath.ToSlash(workflow.Path))
-		}
-	}
+	fmt.Fprintf(w, "Workflow: `%s`\n", analysis.Workflow)
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "## Findings\n\n")
-	if len(findings) == 0 {
+	if len(analysis.Findings) == 0 {
 		fmt.Fprintln(w, "No findings.")
 		return nil
 	}
-	for _, finding := range findings {
+	for _, finding := range analysis.Findings {
 		fmt.Fprintf(w, "### %s\n\n", finding.Title)
 		fmt.Fprintf(w, "- ID: `%s`\n", finding.ID)
 		fmt.Fprintf(w, "- Severity: `%s`\n", finding.Severity)
