@@ -211,6 +211,9 @@ func Signature(message string) string {
 		{[]string{"jest", "timeout"}, "jest timeout"},
 		{[]string{"npm", "install"}, "npm install failure"},
 		{[]string{"npm err!"}, "npm install failure"},
+		{[]string{"yarn", "install"}, "npm install failure"},
+		{[]string{"yarn", "error"}, "npm install failure"},
+		{[]string{"corepack", "error"}, "npm install failure"},
 		{[]string{"image", "pull"}, "image pull failure"},
 		{[]string{"pull", "timeout"}, "image pull timeout"},
 		{[]string{"failed to solve"}, "build failure"},
@@ -272,7 +275,10 @@ func containsAll(value string, terms []string) bool {
 var (
 	imageRefToken        = `([^\s"'<>]+)`
 	urlPattern           = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	npmPackagePattern    = regexp.MustCompile(`(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)(?:@([0-9][a-zA-Z0-9._+-]*))?`)
+	ansiPattern          = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	scopedPackagePattern = regexp.MustCompile(`(^|[^a-zA-Z0-9._/-])(@[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)`)
+	npmSpecPattern       = regexp.MustCompile(`(^|[\s"'(])(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)@(?:npm:|patch:|workspace:|file:|link:|[0-9][a-zA-Z0-9._+~:-]*)`)
+	packageJSONPattern   = regexp.MustCompile(`"(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)"\s*:\s*"[^"]+"`)
 	testNamePattern      = regexp.MustCompile(`(?:FAIL|--- FAIL:|not ok)\s+([A-Za-z0-9_./:-]+)`)
 	sourceFilePattern    = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|js|jsx|ts|tsx|java|py|rb|c|cc|cpp|h))(?::[0-9]+(?::[0-9]+)?)?`)
 	buildTargetPattern   = regexp.MustCompile(`(?:target|building|make)\s+([A-Za-z0-9_./:-]+)`)
@@ -337,7 +343,8 @@ type NPMFailureExtractor struct{}
 
 func (NPMFailureExtractor) Extract(observation Observation) []FailureEvidence {
 	var result []FailureEvidence
-	for _, line := range diagnosticLines(observation.Message, []string{"npm", "pnpm", "yarn", "eresolve", "registry", "dependency"}) {
+	message := stripANSI(observation.Message)
+	for _, line := range diagnosticLines(message, []string{"npm", "pnpm", "yarn", "corepack", "eresolve", "registry", "dependency", "package"}) {
 		item := baseEvidence(observation, line)
 		item.RegistryURL = firstURL(line)
 		item.DependencyConflict = dependencyConflict(line)
@@ -556,22 +563,109 @@ type npmPackage struct {
 func npmPackages(line string) []npmPackage {
 	var result []npmPackage
 	lower := strings.ToLower(line)
-	if !(strings.Contains(lower, "npm") || strings.Contains(lower, "pnpm") || strings.Contains(lower, "yarn") || strings.Contains(lower, "package") || strings.Contains(lower, "dependency")) {
+	if !isPackageDiagnosticLine(lower) {
 		return result
 	}
-	for _, match := range npmPackagePattern.FindAllStringSubmatch(line, -1) {
-		if len(match) < 2 || match[1] == "" {
+	for _, match := range scopedPackagePattern.FindAllStringSubmatch(line, -1) {
+		if len(match) < 3 {
 			continue
 		}
-		name := strings.Trim(match[1], `"'<>.,;:()`)
-		if isPackageNoise(name) || strings.Contains(name, ".") || strings.Contains(name, "/Users/") {
+		if name := cleanPackageName(match[2]); name != "" {
+			result = append(result, npmPackage{name: name})
+		}
+	}
+	for _, match := range npmSpecPattern.FindAllStringSubmatch(line, -1) {
+		if len(match) < 3 {
 			continue
 		}
-		version := ""
-		if len(match) > 2 {
-			version = match[2]
+		if name := cleanPackageName(match[2]); name != "" {
+			result = append(result, npmPackage{name: name})
 		}
-		result = append(result, npmPackage{name: name, version: version})
+	}
+	for _, match := range packageJSONPattern.FindAllStringSubmatch(line, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		if name := cleanPackageName(match[1]); name != "" {
+			result = append(result, npmPackage{name: name})
+		}
+	}
+	return uniquePackages(result)
+}
+
+func stripANSI(value string) string {
+	return ansiPattern.ReplaceAllString(value, "")
+}
+
+func isPackageDiagnosticLine(lower string) bool {
+	for _, term := range []string{"npm", "pnpm", "yarn", "corepack", "eresolve", "peer", "package", "dependency", "lockfile"} {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanPackageName(value string) string {
+	value = strings.TrimSpace(strings.Trim(value, `"'<>.,;:()[]{}|`))
+	lower := strings.ToLower(value)
+	if value == "" || strings.HasPrefix(value, "--") || strings.Contains(value, "\x1b") {
+		return ""
+	}
+	if strings.Contains(value, "/") && !strings.HasPrefix(value, "@") {
+		return ""
+	}
+	if strings.Contains(value, `\`) || strings.HasPrefix(value, ".") || strings.HasPrefix(value, "/") {
+		return ""
+	}
+	if isPackageNoise(lower) || isTimestampLike(value) || isNumericLike(value) {
+		return ""
+	}
+	if strings.HasPrefix(value, "@") {
+		parts := strings.Split(value, "/")
+		if len(parts) != 2 || parts[0] == "@" || parts[1] == "" {
+			return ""
+		}
+		return value
+	}
+	if !isKnownUnscopedPackage(lower) {
+		return ""
+	}
+	return value
+}
+
+func isTimestampLike(value string) bool {
+	return regexp.MustCompile(`^\d{1,4}[:/-]\d`).MatchString(value)
+}
+
+func isNumericLike(value string) bool {
+	for _, r := range value {
+		if (r < '0' || r > '9') && r != '.' && r != 'm' && r != 's' {
+			return false
+		}
+	}
+	return true
+}
+
+func isKnownUnscopedPackage(value string) bool {
+	switch value {
+	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "corepack", "yarn", "npm", "pnpm", "lodash":
+		return true
+	default:
+		return strings.Contains(value, "-")
+	}
+}
+
+func uniquePackages(values []npmPackage) []npmPackage {
+	seen := map[string]bool{}
+	var result []npmPackage
+	for _, value := range values {
+		key := value.name + "@" + value.version
+		if value.name == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, value)
 	}
 	return result
 }
@@ -743,7 +837,10 @@ func excerpt(message string) string {
 
 func isPackageNoise(value string) bool {
 	switch strings.ToLower(value) {
-	case "install", "failed", "failure", "error", "warning", "warn", "err":
+	case "-", "install", "failed", "failure", "error", "warning", "warn", "err",
+		"because", "the", "your", "you", "and", "or", "to", "from", "with", "for",
+		"this", "that", "package", "packages", "dependency", "dependencies",
+		"resolution", "step", "immutable", "cache", "completed", "done":
 		return true
 	default:
 		return false

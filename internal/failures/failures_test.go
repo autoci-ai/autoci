@@ -157,3 +157,41 @@ npm ERR! registry https://registry.npmjs.org/`,
 		t.Fatalf("evidence = %#v", theme.Evidence)
 	}
 }
+
+func TestNPMEvidenceRejectsLogNoiseAndPreservesUsefulURLs(t *testing.T) {
+	analysis := Analyze("pr.yml", 10, 2, []Observation{{
+		Job:   "frontend",
+		RunID: "run-1",
+		Message: "\x1b[31m➤ YN0000\x1b[0m: 0m 111myarn because the your --immutable\n" +
+			"2026-05-29T14:57:32Z yarn install failed because your lockfile would have been modified\n" +
+			"➤ YN0001: │ Error: @snyk/protect@npm:1.1294.0 failed because @snyk/cli-interface@npm:^2.0.0 could not be resolved\n" +
+			"➤ YN0000: │ Downloading https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js\n" +
+			"npm ERR! request to https://downloads.snyk.io/cli failed",
+	}})
+
+	theme := analysis.FailureThemes[0]
+	for _, bad := range []string{"-", "0m", "111myarn", "because", "the", "your", "--immutable"} {
+		if containsString(theme.Artifacts.Packages, bad) {
+			t.Fatalf("unexpected package %q in %#v", bad, theme.Artifacts.Packages)
+		}
+	}
+	for _, want := range []string{"@snyk/protect", "@snyk/cli-interface"} {
+		if !containsString(theme.Artifacts.Packages, want) {
+			t.Fatalf("missing package %q in %#v", want, theme.Artifacts.Packages)
+		}
+	}
+	for _, want := range []string{"https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js", "https://downloads.snyk.io/cli"} {
+		if !containsString(theme.Artifacts.URLs, want) {
+			t.Fatalf("missing url %q in %#v", want, theme.Artifacts.URLs)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

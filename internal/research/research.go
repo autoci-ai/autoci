@@ -470,6 +470,9 @@ func rawEvidenceFromFailureTheme(workflowName string, theme failures.FailureThem
 	raw.Registries = uniqueSorted(raw.Registries)
 	raw.Actions = uniqueSorted(raw.Actions)
 	raw.Modules = uniqueSorted(raw.Modules)
+	if theme.Signature == "npm install failure" {
+		raw.Modules = cleanResearchPackages(raw.Modules)
+	}
 	raw.URLs = uniqueSorted(raw.URLs)
 	raw.Hosts = uniqueSorted(raw.Hosts)
 	raw.LogExcerpts = uniqueSorted(raw.LogExcerpts)
@@ -489,8 +492,18 @@ func whyForFailureTheme(theme failures.FailureTheme, raw RawEvidence) []string {
 		reasons = append(reasons, fmt.Sprintf("Pull evidence points at registry host(s): %s.", strings.Join(raw.Registries, ", ")))
 	}
 	if len(raw.Modules) > 0 {
+		if theme.Signature == "npm install failure" {
+			reasons = append(reasons, fmt.Sprintf("Referenced packages: %s.", strings.Join(raw.Modules, ", ")))
+			return append(reasons, whyURLsAndLogs(raw)...)
+		}
 		reasons = append(reasons, fmt.Sprintf("Recurring module/package/source evidence: %s.", strings.Join(raw.Modules, ", ")))
 	}
+	reasons = append(reasons, whyURLsAndLogs(raw)...)
+	return reasons
+}
+
+func whyURLsAndLogs(raw RawEvidence) []string {
+	var reasons []string
 	if len(raw.URLs) > 0 {
 		reasons = append(reasons, fmt.Sprintf("Relevant URL evidence: %s.", strings.Join(raw.URLs, ", ")))
 	}
@@ -529,7 +542,7 @@ func imagePullHypotheses(raw RawEvidence) []RootCauseHypothesis {
 }
 
 func npmHypotheses(raw RawEvidence) []RootCauseHypothesis {
-	packages := joinOrFallback(raw.Modules, "the affected package set")
+	packages := npmPackagePhrase(raw)
 	registry := joinOrFallback(raw.URLs, joinOrFallback(raw.Hosts, "the package registry"))
 	return []RootCauseHypothesis{
 		{Summary: fmt.Sprintf("Dependency resolution is failing for %s because the lockfile and package peer constraints disagree.", packages), Confidence: confidenceWithEvidence(78, matchingEvidence(raw, []string{"eresolve", "peer"})), Evidence: matchingEvidence(raw, []string{"eresolve", "peer", "dependency"})},
@@ -593,6 +606,51 @@ func npmInvestigationSteps(raw RawEvidence) []string {
 	}
 	steps = append(steps, "Compare package lockfile and dependency cache state between failed and successful runs for the affected jobs.")
 	return limitStrings(uniqueSorted(append(steps, investigationStepsForRaw(raw)...)), 5)
+}
+
+func npmPackagePhrase(raw RawEvidence) string {
+	if len(raw.Modules) == 0 {
+		return "the dependency install"
+	}
+	return "referenced packages " + strings.Join(raw.Modules, ", ")
+}
+
+func cleanResearchPackages(values []string) []string {
+	var result []string
+	for _, value := range values {
+		if isCleanResearchPackage(value) {
+			result = append(result, value)
+		}
+	}
+	return uniqueSorted(result)
+}
+
+func isCleanResearchPackage(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "--") || strings.Contains(value, "\x1b") {
+		return false
+	}
+	lower := strings.ToLower(value)
+	switch lower {
+	case "-", "0m", "because", "the", "your", "you", "and", "or", "to", "from", "with", "for", "install", "failed", "failure", "error":
+		return false
+	}
+	if regexp.MustCompile(`^\d{1,4}[:/-]\d`).MatchString(value) || regexp.MustCompile(`^[0-9.]+[ms]?$`).MatchString(value) {
+		return false
+	}
+	if strings.HasPrefix(value, "@") {
+		parts := strings.Split(value, "/")
+		return len(parts) == 2 && parts[0] != "@" && parts[1] != ""
+	}
+	if strings.Contains(value, "/") {
+		return false
+	}
+	switch lower {
+	case "react", "typescript", "eslint", "webpack", "vite", "jest", "next", "snyk", "corepack", "yarn", "npm", "pnpm", "lodash":
+		return true
+	default:
+		return strings.Contains(value, "-")
+	}
 }
 
 func testInvestigationSteps(raw RawEvidence) []string {

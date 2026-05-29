@@ -109,6 +109,45 @@ func TestFromProfileAndFailuresPrioritizesFailureThemes(t *testing.T) {
 	}
 }
 
+func TestNPMResearchDoesNotClaimReferencedPackagesWhenEvidenceIsEmpty(t *testing.T) {
+	failureAnalysis := &failures.Analysis{
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-npm-install-failure",
+			Signature:   "npm install failure",
+			Occurrences: 3,
+			Jobs:        []string{"frontend"},
+			Artifacts: failures.FailureArtifacts{
+				Packages: []string{"-", "0m", "111myarn", "because", "the", "your"},
+			},
+			Evidence: []failures.FailureEvidence{{
+				RunID:        "run-1",
+				Job:          "frontend",
+				InstallError: "yarn install failed because your lockfile would have been modified",
+				LogExcerpt:   "yarn install failed because your lockfile would have been modified",
+				RegistryURL:  "https://repo.yarnpkg.com/4.5.1/packages/yarnpkg-cli/bin/yarn.js",
+			}},
+		}},
+	}
+
+	plan := FromProfileAndFailures("pr.yml", nil, failureAnalysis, true)
+	if len(plan.Opportunities) == 0 {
+		t.Fatal("expected opportunities")
+	}
+	opportunity := plan.Opportunities[0]
+	if strings.Contains(strings.Join(opportunity.WhyWeBelieveThis, "\n"), "Referenced packages") {
+		t.Fatalf("unexpected package claim: %#v", opportunity.WhyWeBelieveThis)
+	}
+	if len(opportunity.RawEvidence.Modules) != 0 {
+		t.Fatalf("expected noisy cached package artifacts to be filtered, got %#v", opportunity.RawEvidence.Modules)
+	}
+	if !strings.Contains(opportunity.Hypothesis, "dependency install") {
+		t.Fatalf("hypothesis should describe install failure, got %q", opportunity.Hypothesis)
+	}
+	if !strings.Contains(strings.Join(opportunity.RawEvidence.URLs, "\n"), "repo.yarnpkg.com") {
+		t.Fatalf("expected URL evidence, got %#v", opportunity.RawEvidence.URLs)
+	}
+}
+
 func TestVerboseShowsCompleteBacklog(t *testing.T) {
 	runtimeProfile := &profile.Profile{Findings: []profile.Finding{
 		{ID: "flaky-job", Workflow: "pr", Job: "frontend-unit-test", Evidence: "Failure rate 10% across 10 runs."},
