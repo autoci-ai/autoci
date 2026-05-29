@@ -24,6 +24,18 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 	}
 	fmt.Fprintf(w, "Workflow: %s\n", plan.Workflow)
 	fmt.Fprintf(w, "Patch type: %s\n", plan.FixType)
+	if len(plan.AffectedJobs) > 0 {
+		fmt.Fprintln(w, "Affected runtime jobs:")
+		for _, job := range plan.AffectedJobs {
+			fmt.Fprintf(w, "- %s\n", job)
+		}
+	}
+	if len(plan.PatchScope.JobsTouched) > 0 {
+		fmt.Fprintln(w, "Workflow jobs touched:")
+		for _, job := range plan.PatchScope.JobsTouched {
+			fmt.Fprintf(w, "- %s\n", job)
+		}
+	}
 	if len(plan.Targets) > 0 {
 		fmt.Fprintln(w, "Targets:")
 		for _, target := range plan.Targets {
@@ -36,6 +48,9 @@ func WriteFixTerminal(w io.Writer, plan fix.Plan, dryRun bool) {
 			}
 			if target.Command != "" && target.Command != target.Step {
 				fmt.Fprintf(w, " Command: %s", target.Command)
+			}
+			if len(target.DerivedFrom) > 0 {
+				fmt.Fprintf(w, " Derived from: %s", listOrNone(target.DerivedFrom))
 			}
 			fmt.Fprintln(w)
 		}

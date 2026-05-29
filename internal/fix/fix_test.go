@@ -144,7 +144,7 @@ func TestGenerateImagePullFailureProducesPlanOnlyWithCandidateReferences(t *test
 
 func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testing.T) {
 	workflow := writeWorkflow(t, `jobs:
-  go-lint:
+  integration-test:
     steps:
       - run: go test ./...
   unrelated-job:
@@ -157,7 +157,7 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 		WorkflowName: "pr.yml",
 		Opportunity:  "failure-theme-image-pull-failure",
 		DryRun:       true,
-		TargetJobs:   []string{"go-lint"},
+		TargetJobs:   []string{"integration-test:matrix-03", "integration-test:matrix-11"},
 		Occurrences:  6,
 		Signature:    "image pull failure",
 		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
@@ -174,8 +174,17 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	if !plan.PatchGenerated || plan.FixType != InstrumentationFix || plan.Confidence != "high" {
 		t.Fatalf("expected high-confidence instrumentation patch, got %#v", plan)
 	}
-	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "go-lint" {
+	if len(plan.AffectedJobs) != 2 || plan.AffectedJobs[0] != "integration-test:matrix-03" || plan.AffectedJobs[1] != "integration-test:matrix-11" {
+		t.Fatalf("affected jobs = %#v", plan.AffectedJobs)
+	}
+	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "integration-test" {
 		t.Fatalf("jobs touched = %#v", plan.PatchScope.JobsTouched)
+	}
+	if len(plan.Targets) != 1 || plan.Targets[0].Job != "integration-test" {
+		t.Fatalf("targets = %#v", plan.Targets)
+	}
+	if got := strings.Join(plan.Targets[0].DerivedFrom, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
+		t.Fatalf("derivedFrom = %#v", plan.Targets[0].DerivedFrom)
 	}
 	for _, want := range []string{"AutoCI capture container diagnostics", "docker version || true", "docker images || true", "docker events --since 30m --until 0s || true"} {
 		if !strings.Contains(plan.Diff, want) {
@@ -191,6 +200,27 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	}
 	if plan.Diff != again.Diff {
 		t.Fatalf("instrumentation diff is not deterministic:\nfirst:\n%s\nsecond:\n%s", plan.Diff, again.Diff)
+	}
+}
+
+func TestWorkflowJobForRuntimeJobMapsMatrixChildren(t *testing.T) {
+	tests := map[string]string{
+		"foo:matrix-00":          "foo",
+		"foo:matrix-12":          "foo",
+		"foo":                    "foo",
+		"foo:matrix-not-a-child": "foo:matrix-not-a-child",
+	}
+	for input, want := range tests {
+		if got := workflowJobForRuntimeJob(input); got != want {
+			t.Fatalf("workflowJobForRuntimeJob(%q) = %q, want %q", input, got, want)
+		}
+	}
+	derived := workflowJobDerivations([]string{"foo:matrix-00", "foo:matrix-12", "bar"})
+	if got := strings.Join(derived["foo"], ","); got != "foo:matrix-00,foo:matrix-12" {
+		t.Fatalf("foo derivation = %#v", derived["foo"])
+	}
+	if got := strings.Join(derived["bar"], ","); got != "bar" {
+		t.Fatalf("bar derivation = %#v", derived["bar"])
 	}
 }
 

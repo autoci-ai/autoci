@@ -283,7 +283,7 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	writeRawResearchEvidence(t, dir, "failure-theme-image-pull-failure", map[string]any{
 		"id":        "failure-theme-image-pull-failure",
 		"workflow":  "pr.yml",
-		"jobs":      []string{"go-lint"},
+		"jobs":      []string{"integration-test:matrix-03", "integration-test:matrix-11"},
 		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
 		"gaps": []map[string]any{
 			{"type": "missing_image", "message": "Exact failing image reference not identified"},
@@ -304,6 +304,7 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 		Workflow       string              `json:"workflow"`
 		Readiness      lifecycle.Readiness `json:"readiness"`
 		FixType        string              `json:"fixType"`
+		AffectedJobs   []string            `json:"affectedJobs"`
 		PatchGenerated bool                `json:"patchGenerated"`
 		PatchApplied   bool                `json:"patchApplied"`
 		Reason         string              `json:"reason"`
@@ -315,6 +316,11 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 			JobsTouched  []string `json:"jobsTouched"`
 			StepsTouched []string `json:"stepsTouched"`
 		} `json:"patchScope"`
+		Targets []struct {
+			Workflow    string   `json:"workflow"`
+			Job         string   `json:"job"`
+			DerivedFrom []string `json:"derivedFrom"`
+		} `json:"targets"`
 		Validation []string `json:"validation"`
 		Diff       string   `json:"diff"`
 	}
@@ -331,8 +337,17 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	if len(plan.Validation) == 0 {
 		t.Fatalf("validation = %#v", plan.Validation)
 	}
-	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "go-lint" {
+	if got := strings.Join(plan.AffectedJobs, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
+		t.Fatalf("affectedJobs = %#v", plan.AffectedJobs)
+	}
+	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "integration-test" {
 		t.Fatalf("jobsTouched = %#v", plan.PatchScope.JobsTouched)
+	}
+	if len(plan.Targets) != 1 || plan.Targets[0].Job != "integration-test" {
+		t.Fatalf("targets = %#v", plan.Targets)
+	}
+	if got := strings.Join(plan.Targets[0].DerivedFrom, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
+		t.Fatalf("derivedFrom = %#v", plan.Targets[0].DerivedFrom)
 	}
 	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture container diagnostics" {
 		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
@@ -347,6 +362,40 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	}
 	if strings.Contains(out.String(), `"jobsTouched": null`) || strings.Contains(out.String(), `"stepsTouched": null`) {
 		t.Fatalf("nullable patchScope arrays in output:\n%s", out.String())
+	}
+}
+
+func TestFixHumanOutputShowsRuntimeAndWorkflowJobs(t *testing.T) {
+	dir := setupImageNeedsEvidenceFixState(t)
+	writeRawResearchEvidence(t, dir, "failure-theme-image-pull-failure", map[string]any{
+		"id":        "failure-theme-image-pull-failure",
+		"workflow":  "pr.yml",
+		"jobs":      []string{"integration-test:matrix-03", "integration-test:matrix-11"},
+		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
+		"gaps": []map[string]any{
+			{"type": "missing_image", "message": "Exact failing image reference not identified"},
+		},
+	})
+
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--path", dir, "fix", "failure-theme-image-pull-failure", "--workflow", "pr.yml", "--dry-run"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	output := out.String()
+	for _, want := range []string{
+		"Affected runtime jobs:",
+		"- integration-test:matrix-03",
+		"- integration-test:matrix-11",
+		"Workflow jobs touched:",
+		"- integration-test",
+		"Derived from: [integration-test:matrix-03 integration-test:matrix-11]",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
 	}
 }
 
@@ -429,7 +478,7 @@ func setupImageNeedsEvidenceFixState(t *testing.T) string {
 		t.Fatal(err)
 	}
 	workflow := `jobs:
-  go-lint:
+  integration-test:
     steps:
       - run: go test ./...
   unrelated-job:
@@ -443,7 +492,7 @@ func setupImageNeedsEvidenceFixState(t *testing.T) string {
 		ID:          "failure-theme-image-pull-failure",
 		Signature:   "image pull failure",
 		Occurrences: 3,
-		Jobs:        []string{"go-lint"},
+		Jobs:        []string{"integration-test:matrix-03", "integration-test:matrix-11"},
 	}}}
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
 		t.Fatal(err)

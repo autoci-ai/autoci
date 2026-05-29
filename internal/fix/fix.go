@@ -21,6 +21,7 @@ type Plan struct {
 	Workflow        string              `json:"workflow"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
 	FixType         FixType             `json:"fixType"`
+	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
 	ChangeSummary   string              `json:"changeSummary"`
@@ -46,12 +47,13 @@ const (
 )
 
 type Target struct {
-	Workflow string `json:"workflow"`
-	Job      string `json:"job,omitempty"`
-	Step     string `json:"step,omitempty"`
-	Command  string `json:"command,omitempty"`
-	Image    string `json:"image,omitempty"`
-	Line     int    `json:"line,omitempty"`
+	Workflow    string   `json:"workflow"`
+	Job         string   `json:"job,omitempty"`
+	Step        string   `json:"step,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Image       string   `json:"image,omitempty"`
+	Line        int      `json:"line,omitempty"`
+	DerivedFrom []string `json:"derivedFrom,omitempty"`
 }
 
 type PatchScope struct {
@@ -97,6 +99,7 @@ type Record struct {
 	Branch          string              `json:"branch,omitempty"`
 	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
 	FixType         FixType             `json:"fixType"`
+	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
 	Hypothesis      string              `json:"hypothesis"`
 	Evidence        string              `json:"evidence"`
 	ChangeSummary   string              `json:"changeSummary"`
@@ -131,10 +134,11 @@ type imageTarget struct {
 }
 
 type jobStepsTarget struct {
-	Workflow string
-	Job      string
-	Line     int
-	LineText string
+	Workflow    string
+	Job         string
+	Line        int
+	LineText    string
+	DerivedFrom []string
 }
 
 func Generate(options Options) (Plan, error) {
@@ -146,6 +150,7 @@ func Generate(options Options) (Plan, error) {
 	plan := basePlan(id, sourceID, options.WorkflowName, options.Evidence)
 	plan.Readiness = options.Readiness
 	plan.Gaps = options.Gaps
+	plan.AffectedJobs = uniqueStringsPreserveOrder(options.TargetJobs)
 
 	original, err := os.ReadFile(options.Workflow.Path)
 	if err != nil {
@@ -236,6 +241,7 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		Branch:          plan.Branch,
 		Readiness:       plan.Readiness,
 		FixType:         plan.FixType,
+		AffectedJobs:    emptyStrings(plan.AffectedJobs),
 		Hypothesis:      plan.Hypothesis,
 		Evidence:        plan.Evidence,
 		ChangeSummary:   plan.ChangeSummary,
@@ -489,11 +495,12 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 		replacements[section.Line] = replacement
 		jobs = append(jobs, section.Job)
 		targets = append(targets, Target{
-			Workflow: section.Workflow,
-			Job:      section.Job,
-			Step:     "AutoCI capture container diagnostics",
-			Command:  "docker version; docker info; docker images; docker ps -a; docker events",
-			Line:     section.Line,
+			Workflow:    section.Workflow,
+			Job:         section.Job,
+			Step:        "AutoCI capture container diagnostics",
+			Command:     "docker version; docker info; docker images; docker ps -a; docker events",
+			Line:        section.Line,
+			DerivedFrom: section.DerivedFrom,
 		})
 	}
 	if len(replacements) == 0 {
@@ -805,10 +812,10 @@ func filterCommandsByJobs(commands []commandTarget, jobs []string) []commandTarg
 	if len(jobs) == 0 {
 		return commands
 	}
-	allowed := stringSet(jobs)
+	allowed := workflowJobDerivations(jobs)
 	var result []commandTarget
 	for _, command := range commands {
-		if allowed[command.Job] {
+		if len(allowed[command.Job]) > 0 {
 			result = append(result, command)
 		}
 	}
@@ -819,24 +826,62 @@ func filterStepsByJobs(steps []jobStepsTarget, jobs []string) []jobStepsTarget {
 	if len(jobs) == 0 {
 		return nil
 	}
-	allowed := stringSet(jobs)
+	derived := workflowJobDerivations(jobs)
 	var result []jobStepsTarget
 	for _, step := range steps {
-		if allowed[step.Job] {
-			result = append(result, step)
+		runtimeJobs := derived[step.Job]
+		if len(runtimeJobs) == 0 {
+			continue
 		}
+		step.DerivedFrom = runtimeJobs
+		result = append(result, step)
 	}
 	return result
+}
+
+func workflowJobDerivations(runtimeJobs []string) map[string][]string {
+	result := map[string][]string{}
+	for _, runtimeJob := range runtimeJobs {
+		runtimeJob = strings.TrimSpace(runtimeJob)
+		if runtimeJob == "" {
+			continue
+		}
+		workflowJob := workflowJobForRuntimeJob(runtimeJob)
+		result[workflowJob] = append(result[workflowJob], runtimeJob)
+	}
+	for workflowJob, values := range result {
+		result[workflowJob] = uniqueStringsPreserveOrder(values)
+	}
+	return result
+}
+
+func workflowJobForRuntimeJob(runtimeJob string) string {
+	runtimeJob = strings.TrimSpace(runtimeJob)
+	marker := ":matrix-"
+	index := strings.LastIndex(runtimeJob, marker)
+	if index <= 0 {
+		return runtimeJob
+	}
+	suffix := runtimeJob[index+len(marker):]
+	if suffix == "" {
+		return runtimeJob
+	}
+	for _, r := range suffix {
+		if r < '0' || r > '9' {
+			return runtimeJob
+		}
+	}
+	return runtimeJob[:index]
 }
 
 func filterImagesByJobs(images []imageTarget, jobs []string) []imageTarget {
 	if len(jobs) == 0 {
 		return images
 	}
-	allowed := stringSet(jobs)
+	allowed := workflowJobDerivations(jobs)
 	var result []imageTarget
 	for _, image := range images {
-		if allowed[image.Job] {
+		if len(allowed[image.Job]) > 0 {
 			result = append(result, image)
 		}
 	}
