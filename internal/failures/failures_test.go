@@ -194,6 +194,46 @@ func TestNPMEvidenceRejectsLogNoiseAndPreservesUsefulURLs(t *testing.T) {
 	}
 }
 
+func TestInstrumentationMarkerKeepsStableFindingID(t *testing.T) {
+	analysis := Analyze("pr.yml", 12, 1, []Observation{{
+		Job:   "frontend-unit-test",
+		RunID: "run-42",
+		Message: `echo "::group::AutoCI diagnostics for failure-theme-npm-install-failure"
+node --version
+snyk@npm:1.1302.1 STDERR - actual: abc123
+snyk@npm:1.1302.1 STDERR - expected: def456
+echo "::endgroup::"`,
+	}, {
+		Job:   "frontend-unit-test",
+		RunID: "run-43",
+		Message: `echo "::group::AutoCI diagnostics for failure-theme-npm-install-failure"
+snyk@npm:1.1302.1 STDERR - actual: abc123
+echo "::endgroup::"`,
+	}})
+
+	if len(analysis.FailureThemes) != 1 {
+		t.Fatalf("themes = %#v", analysis.FailureThemes)
+	}
+	theme := analysis.FailureThemes[0]
+	if theme.ID != "failure-theme-npm-install-failure" || theme.Signature != "npm install failure" {
+		t.Fatalf("theme = %#v", theme)
+	}
+	if theme.Occurrences != 2 {
+		t.Fatalf("expected repeated instrumented runs to stay on same finding, got %d", theme.Occurrences)
+	}
+	if len(theme.Evidence) == 0 {
+		t.Fatalf("expected instrumentation evidence")
+	}
+	for _, evidence := range theme.Evidence {
+		if evidence.InstrumentationID != "failure-theme-npm-install-failure" {
+			t.Fatalf("instrumentation id missing from evidence: %#v", evidence)
+		}
+	}
+	if got := FirstInstrumentationID(theme.Evidence[0].LogExcerpt + "\nAutoCI diagnostics for failure-theme-image-pull-failure"); got != "failure-theme-image-pull-failure" {
+		t.Fatalf("detected instrumentation id = %q", got)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

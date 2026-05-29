@@ -15,29 +15,31 @@ import (
 )
 
 type Plan struct {
-	ID              string              `json:"id"`
-	SourceID        string              `json:"sourceId"`
-	Branch          string              `json:"branch,omitempty"`
-	Workflow        string              `json:"workflow"`
-	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType         FixType             `json:"fixType,omitempty"`
-	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
-	Hypothesis      string              `json:"hypothesis"`
-	Evidence        string              `json:"evidence"`
-	ChangeSummary   string              `json:"changeSummary"`
-	SuccessCriteria string              `json:"successCriteria"`
-	Confidence      string              `json:"confidence"`
-	Reason          string              `json:"reason,omitempty"`
-	PatchGenerated  bool                `json:"patchGenerated"`
-	PatchApplied    bool                `json:"patchApplied"`
-	Targets         []Target            `json:"targets,omitempty"`
-	PatchScope      PatchScope          `json:"patchScope"`
-	Diff            string              `json:"diff,omitempty"`
-	Validation      []string            `json:"validation"`
-	NextSteps       []string            `json:"nextSteps,omitempty"`
-	FilesChanged    []string            `json:"filesChanged,omitempty"`
-	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
-	patchedContent  string
+	ID                     string              `json:"id"`
+	SourceID               string              `json:"sourceId"`
+	Branch                 string              `json:"branch,omitempty"`
+	Workflow               string              `json:"workflow"`
+	Readiness              lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType                FixType             `json:"fixType,omitempty"`
+	InstrumentationID      string              `json:"instrumentationId,omitempty"`
+	InstrumentationApplied bool                `json:"instrumentationApplied,omitempty"`
+	AffectedJobs           []string            `json:"affectedJobs,omitempty"`
+	Hypothesis             string              `json:"hypothesis"`
+	Evidence               string              `json:"evidence"`
+	ChangeSummary          string              `json:"changeSummary"`
+	SuccessCriteria        string              `json:"successCriteria"`
+	Confidence             string              `json:"confidence"`
+	Reason                 string              `json:"reason,omitempty"`
+	PatchGenerated         bool                `json:"patchGenerated"`
+	PatchApplied           bool                `json:"patchApplied"`
+	Targets                []Target            `json:"targets,omitempty"`
+	PatchScope             PatchScope          `json:"patchScope"`
+	Diff                   string              `json:"diff,omitempty"`
+	Validation             []string            `json:"validation"`
+	NextSteps              []string            `json:"nextSteps,omitempty"`
+	FilesChanged           []string            `json:"filesChanged,omitempty"`
+	Gaps                   []EvidenceGap       `json:"gaps,omitempty"`
+	patchedContent         string
 }
 
 type FixType string
@@ -95,27 +97,29 @@ type Hypothesis struct {
 }
 
 type Record struct {
-	ID              string              `json:"id"`
-	SourceItemID    string              `json:"sourceItemId"`
-	Workflow        string              `json:"workflow"`
-	Branch          string              `json:"branch,omitempty"`
-	Readiness       lifecycle.Readiness `json:"readiness,omitempty"`
-	FixType         FixType             `json:"fixType,omitempty"`
-	AffectedJobs    []string            `json:"affectedJobs,omitempty"`
-	Hypothesis      string              `json:"hypothesis"`
-	Evidence        string              `json:"evidence"`
-	ChangeSummary   string              `json:"changeSummary"`
-	SuccessCriteria string              `json:"successCriteria"`
-	Confidence      string              `json:"confidence"`
-	Reason          string              `json:"reason,omitempty"`
-	PatchGenerated  bool                `json:"patchGenerated"`
-	PatchApplied    bool                `json:"patchApplied"`
-	Targets         []Target            `json:"targets,omitempty"`
-	PatchScope      PatchScope          `json:"patchScope"`
-	FilesChanged    []string            `json:"filesChanged"`
-	Gaps            []EvidenceGap       `json:"gaps,omitempty"`
-	NextSteps       []string            `json:"nextSteps,omitempty"`
-	DryRun          bool                `json:"dryRun"`
+	ID                     string              `json:"id"`
+	SourceItemID           string              `json:"sourceItemId"`
+	Workflow               string              `json:"workflow"`
+	Branch                 string              `json:"branch,omitempty"`
+	Readiness              lifecycle.Readiness `json:"readiness,omitempty"`
+	FixType                FixType             `json:"fixType,omitempty"`
+	InstrumentationID      string              `json:"instrumentationId,omitempty"`
+	InstrumentationApplied bool                `json:"instrumentationApplied,omitempty"`
+	AffectedJobs           []string            `json:"affectedJobs,omitempty"`
+	Hypothesis             string              `json:"hypothesis"`
+	Evidence               string              `json:"evidence"`
+	ChangeSummary          string              `json:"changeSummary"`
+	SuccessCriteria        string              `json:"successCriteria"`
+	Confidence             string              `json:"confidence"`
+	Reason                 string              `json:"reason,omitempty"`
+	PatchGenerated         bool                `json:"patchGenerated"`
+	PatchApplied           bool                `json:"patchApplied"`
+	Targets                []Target            `json:"targets,omitempty"`
+	PatchScope             PatchScope          `json:"patchScope"`
+	FilesChanged           []string            `json:"filesChanged"`
+	Gaps                   []EvidenceGap       `json:"gaps,omitempty"`
+	NextSteps              []string            `json:"nextSteps,omitempty"`
+	DryRun                 bool                `json:"dryRun"`
 }
 
 type workflowInspection struct {
@@ -231,6 +235,10 @@ func Generate(options Options) (Plan, error) {
 }
 
 func normalizePlan(plan Plan) Plan {
+	if plan.FixType == InstrumentationFix && plan.InstrumentationID == "" {
+		plan.InstrumentationID = plan.SourceID
+	}
+	plan.InstrumentationApplied = plan.FixType == InstrumentationFix && plan.PatchApplied
 	plan.PatchScope = normalizePatchScope(plan.PatchScope)
 	return plan
 }
@@ -244,27 +252,29 @@ func normalizePatchScope(scope PatchScope) PatchScope {
 func NewRecord(plan Plan, dryRun bool) Record {
 	plan = normalizePlan(plan)
 	return Record{
-		ID:              "fix-" + trimFixPrefix(plan.ID),
-		SourceItemID:    plan.SourceID,
-		Workflow:        plan.Workflow,
-		Branch:          plan.Branch,
-		Readiness:       plan.Readiness,
-		FixType:         plan.FixType,
-		AffectedJobs:    emptyStrings(plan.AffectedJobs),
-		Hypothesis:      plan.Hypothesis,
-		Evidence:        plan.Evidence,
-		ChangeSummary:   plan.ChangeSummary,
-		SuccessCriteria: plan.SuccessCriteria,
-		Confidence:      plan.Confidence,
-		Reason:          plan.Reason,
-		PatchGenerated:  plan.PatchGenerated,
-		PatchApplied:    plan.PatchApplied,
-		Targets:         emptyTargets(plan.Targets),
-		PatchScope:      plan.PatchScope,
-		FilesChanged:    emptyStrings(plan.FilesChanged),
-		Gaps:            plan.Gaps,
-		NextSteps:       emptyStrings(plan.NextSteps),
-		DryRun:          dryRun,
+		ID:                     "fix-" + trimFixPrefix(plan.ID),
+		SourceItemID:           plan.SourceID,
+		Workflow:               plan.Workflow,
+		Branch:                 plan.Branch,
+		Readiness:              plan.Readiness,
+		FixType:                plan.FixType,
+		InstrumentationID:      plan.InstrumentationID,
+		InstrumentationApplied: plan.InstrumentationApplied,
+		AffectedJobs:           emptyStrings(plan.AffectedJobs),
+		Hypothesis:             plan.Hypothesis,
+		Evidence:               plan.Evidence,
+		ChangeSummary:          plan.ChangeSummary,
+		SuccessCriteria:        plan.SuccessCriteria,
+		Confidence:             plan.Confidence,
+		Reason:                 plan.Reason,
+		PatchGenerated:         plan.PatchGenerated,
+		PatchApplied:           plan.PatchApplied,
+		Targets:                emptyTargets(plan.Targets),
+		PatchScope:             plan.PatchScope,
+		FilesChanged:           emptyStrings(plan.FilesChanged),
+		Gaps:                   plan.Gaps,
+		NextSteps:              emptyStrings(plan.NextSteps),
+		DryRun:                 dryRun,
 	}
 }
 
@@ -578,7 +588,8 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 	var targets []Target
 	var jobs []string
 	for _, section := range sections {
-		replacement := instrumentationStepsAppend(section.LineText, section.StepIndent, imagePullInstrumentationCommands(options.Gaps))
+		stepName := instrumentationStepName("AutoCI capture container diagnostics", plan.SourceID)
+		replacement := instrumentationStepsAppend(section.LineText, section.StepIndent, stepName, imagePullInstrumentationCommands(options.Gaps, plan.SourceID))
 		if replacement == "" {
 			continue
 		}
@@ -587,7 +598,7 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 		targets = append(targets, Target{
 			Workflow:    section.Workflow,
 			Job:         section.Job,
-			Step:        "AutoCI capture container diagnostics",
+			Step:        stepName,
 			Command:     "docker version; docker info; docker images; docker ps -a; docker events",
 			Line:        section.Line,
 			DerivedFrom: section.DerivedFrom,
@@ -601,6 +612,7 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 	}
 	patched := applyLineReplacements(string(original), replacements)
 	plan.FixType = InstrumentationFix
+	plan.InstrumentationID = plan.SourceID
 	plan.Confidence = "high"
 	plan.Hypothesis = "The cached evidence is missing the concrete image pull details required for a root-cause fix."
 	plan.ChangeSummary = "Cannot safely generate a root-cause fix. Proposed instrumentation patch: capture image references, registry/Docker environment details, container state, and recent Docker events in the affected job."
@@ -612,7 +624,7 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 	plan.PatchScope = PatchScope{
 		FilesChanged:          1,
 		JobsTouched:           uniqueStringsPreserveOrder(jobs),
-		StepsTouched:          []string{"AutoCI capture container diagnostics"},
+		StepsTouched:          []string{instrumentationStepName("AutoCI capture container diagnostics", plan.SourceID)},
 		UnrelatedLinesChanged: 0,
 	}
 	plan.Diff = multiLineDiff(plan.Workflow, string(original), replacements)
@@ -621,9 +633,9 @@ func buildImagePullInstrumentationPatch(plan *Plan, original []byte, inspection 
 	return true
 }
 
-func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
+func imagePullInstrumentationCommands(gaps []EvidenceGap, instrumentationID string) []string {
 	commands := []string{
-		`echo "::group::AutoCI container diagnostics"`,
+		fmt.Sprintf(`echo "::group::AutoCI diagnostics for %s"`, instrumentationID),
 		"docker version || true",
 		"docker info || true",
 	}
@@ -672,7 +684,8 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 	}
 	candidate := candidates[0]
 	stepIndent := stepIndentForCommandLine(candidate.LineText)
-	replacement := instrumentationStepInsertAfter(candidate.LineText, stepIndent, "AutoCI capture yarn install diagnostics", yarnInstallInstrumentationCommands())
+	stepName := instrumentationStepName("AutoCI capture yarn install diagnostics", plan.SourceID)
+	replacement := instrumentationStepInsertAfter(candidate.LineText, stepIndent, stepName, yarnInstallInstrumentationCommands(plan.SourceID))
 	if replacement == "" {
 		plan.FixType = InstrumentationFix
 		plan.Confidence = "low"
@@ -682,6 +695,7 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 	replacements := map[int]string{candidate.Line: replacement}
 	patched := applyLineReplacements(string(original), replacements)
 	plan.FixType = InstrumentationFix
+	plan.InstrumentationID = plan.SourceID
 	plan.Confidence = "high"
 	plan.Hypothesis = primaryResearchHypothesis(options, "Snyk/Yarn install failure needs more diagnostic evidence before selecting a root-cause patch.")
 	plan.ChangeSummary = "Cannot safely generate a root-cause fix. Proposed instrumentation patch: capture Node/Corepack/Yarn versions, Yarn configuration/cache metadata, Snyk package files, binary checksums, safe environment metadata, and reachability to Snyk/Yarn download hosts after the install step fails."
@@ -691,8 +705,8 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 	plan.Targets = []Target{{
 		Workflow:    candidate.Workflow,
 		Job:         candidate.Job,
-		Step:        "AutoCI capture yarn install diagnostics",
-		Command:     strings.Join(yarnInstallInstrumentationCommands(), "; "),
+		Step:        stepName,
+		Command:     strings.Join(yarnInstallInstrumentationCommands(plan.SourceID), "; "),
 		Line:        candidate.Line,
 		DerivedFrom: workflowJobDerivations(options.TargetJobs)[candidate.Job],
 	}}
@@ -700,7 +714,7 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 	plan.PatchScope = PatchScope{
 		FilesChanged:          1,
 		JobsTouched:           []string{candidate.Job},
-		StepsTouched:          []string{"AutoCI capture yarn install diagnostics"},
+		StepsTouched:          []string{stepName},
 		UnrelatedLinesChanged: 0,
 	}
 	plan.Diff = multiLineDiff(plan.Workflow, string(original), replacements)
@@ -709,9 +723,9 @@ func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, ins
 	return true
 }
 
-func yarnInstallInstrumentationCommands() []string {
+func yarnInstallInstrumentationCommands(instrumentationID string) []string {
 	return []string{
-		`echo "::group::AutoCI yarn install diagnostics"`,
+		fmt.Sprintf(`echo "::group::AutoCI diagnostics for %s"`, instrumentationID),
 		"node --version || true",
 		"corepack --version || true",
 		"yarn --version || true",
@@ -724,6 +738,13 @@ func yarnInstallInstrumentationCommands() []string {
 		`curl -fsSIL --max-time 10 https://repo.yarnpkg.com/ >/dev/null && echo "repo.yarnpkg.com reachable" || echo "repo.yarnpkg.com unreachable"`,
 		`echo "::endgroup::"`,
 	}
+}
+
+func instrumentationStepName(base, instrumentationID string) string {
+	if instrumentationID == "" {
+		return base
+	}
+	return fmt.Sprintf("%s [%s]", base, instrumentationID)
 }
 
 func instrumentationStepInsertAfter(anchorLine, stepIndent, name string, commands []string) string {
@@ -752,7 +773,7 @@ func stepIndentForCommandLine(line string) string {
 	return indent[:len(indent)-2]
 }
 
-func instrumentationStepsAppend(anchorLine, stepIndent string, commands []string) string {
+func instrumentationStepsAppend(anchorLine, stepIndent, name string, commands []string) string {
 	if strings.TrimSpace(anchorLine) == "" || stepIndent == "" || len(commands) == 0 {
 		return ""
 	}
@@ -761,7 +782,7 @@ func instrumentationStepsAppend(anchorLine, stepIndent string, commands []string
 	if strings.TrimSpace(anchorLine) == "steps: []" {
 		lines[0] = strings.Replace(anchorLine, "steps: []", "steps:", 1)
 	}
-	lines = append(lines, stepIndent+"- name: AutoCI capture container diagnostics")
+	lines = append(lines, stepIndent+"- name: "+name)
 	lines = append(lines, bodyIndent+"if: failure()")
 	lines = append(lines, bodyIndent+"run: |")
 	for _, command := range commands {

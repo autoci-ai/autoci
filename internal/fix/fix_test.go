@@ -189,7 +189,7 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	if got := strings.Join(plan.Targets[0].DerivedFrom, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
 		t.Fatalf("derivedFrom = %#v", plan.Targets[0].DerivedFrom)
 	}
-	for _, want := range []string{"AutoCI capture container diagnostics", "if: failure()", "docker version || true", "docker images || true", "docker events --since 30m || true"} {
+	for _, want := range []string{"AutoCI capture container diagnostics [failure-theme-image-pull-failure]", "AutoCI diagnostics for failure-theme-image-pull-failure", "if: failure()", "docker version || true", "docker images || true", "docker events --since 30m || true"} {
 		if !strings.Contains(plan.Diff, want) {
 			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
 		}
@@ -197,7 +197,7 @@ func TestGenerateImagePullNeedsMoreEvidenceCreatesInstrumentationPatch(t *testin
 	patched := applyLineDiff(readWorkflow(t, workflow), plan)
 	checkoutIndex := strings.Index(patched, "- uses: actions/checkout@v4")
 	testIndex := strings.Index(patched, "- run: go test ./...")
-	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture container diagnostics")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture container diagnostics [failure-theme-image-pull-failure]")
 	if checkoutIndex < 0 || testIndex < 0 || diagnosticsIndex < 0 {
 		t.Fatalf("patched workflow missing expected steps:\n%s", patched)
 	}
@@ -253,15 +253,18 @@ func TestGenerateYarnInstrumentationAfterInlineRunStepPreservesIndentation(t *te
 	if !plan.PatchGenerated {
 		t.Fatalf("expected instrumentation patch, got reason: %s", plan.Reason)
 	}
+	if plan.InstrumentationID != "failure-theme-npm-install-failure" {
+		t.Fatalf("instrumentationId = %q", plan.InstrumentationID)
+	}
 	patched := applyLineDiff(readWorkflow(t, workflow), plan)
-	if !strings.Contains(patched, "      - run: corepack enable && yarn install --immutable\n      - name: AutoCI capture yarn install diagnostics\n        if: failure()") {
+	if !strings.Contains(patched, "      - run: corepack enable && yarn install --immutable\n      - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]\n        if: failure()") {
 		t.Fatalf("instrumentation step indentation/order is wrong:\n%s", patched)
 	}
-	if strings.Contains(patched, "\n    - name: AutoCI capture yarn install diagnostics") {
+	if strings.Contains(patched, "\n    - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]") {
 		t.Fatalf("instrumentation step was inserted at job indentation instead of steps indentation:\n%s", patched)
 	}
 	installIndex := strings.Index(patched, "- run: corepack enable && yarn install --immutable")
-	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]")
 	testIndex := strings.Index(patched, "- run: yarn test")
 	if !(installIndex >= 0 && diagnosticsIndex > installIndex && testIndex > diagnosticsIndex) {
 		t.Fatalf("instrumentation not inserted immediately after install step:\n%s", patched)
@@ -325,7 +328,7 @@ func TestGenerateYarnInstrumentationUsesExactWorkflowJobAndCommand(t *testing.T)
 	patched := applyLineDiff(readWorkflow(t, workflow), plan)
 	setupGoIndex := strings.Index(patched, "- uses: actions/setup-go@v5")
 	installIndex := strings.Index(patched, "- run: corepack enable && yarn install --immutable")
-	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]")
 	testIndex := strings.Index(patched, "- run: yarn test")
 	if !(setupGoIndex >= 0 && installIndex > setupGoIndex && diagnosticsIndex > installIndex && testIndex > diagnosticsIndex) {
 		t.Fatalf("diagnostics were not inserted after frontend yarn install:\n%s", patched)

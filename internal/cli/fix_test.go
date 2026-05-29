@@ -135,10 +135,11 @@ func TestFixGeneratesYarnSnykInstrumentationForSnykIntegrityResearch(t *testing.
 		"Patch generated: yes",
 		"Workflow jobs touched:",
 		"- frontend-unit-test",
-		"AutoCI capture yarn install diagnostics",
+		"AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]",
 		"Reason: Readiness is needs_more_evidence; generated instrumentation from Snyk/Yarn install gaps",
-		"+      - name: AutoCI capture yarn install diagnostics",
+		"+      - name: AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]",
 		"+        if: failure()",
+		"+          echo \"::group::AutoCI diagnostics for failure-theme-npm-install-failure\"",
 		"+          node --version || true",
 		"+          corepack --version || true",
 		"+          yarn --version || true",
@@ -157,6 +158,10 @@ func TestFixGeneratesYarnSnykInstrumentationForSnykIntegrityResearch(t *testing.
 	if strings.Contains(output, "other-job") {
 		t.Fatalf("unrelated job modified:\n%s", output)
 	}
+	record, raw := readFixRecord(t, dir)
+	if record.Data.SourceItemID != "failure-theme-npm-install-failure" || record.Data.InstrumentationID != "failure-theme-npm-install-failure" {
+		t.Fatalf("fix record did not store instrumentation correlation: %#v\n%s", record.Data, raw)
+	}
 }
 
 func TestFixJSONYarnSnykInstrumentationIsValid(t *testing.T) {
@@ -166,12 +171,13 @@ func TestFixJSONYarnSnykInstrumentationIsValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	var plan struct {
-		SourceID       string              `json:"sourceId"`
-		Readiness      lifecycle.Readiness `json:"readiness"`
-		FixType        string              `json:"fixType"`
-		PatchGenerated bool                `json:"patchGenerated"`
-		PatchApplied   bool                `json:"patchApplied"`
-		Targets        []struct {
+		SourceID          string              `json:"sourceId"`
+		Readiness         lifecycle.Readiness `json:"readiness"`
+		FixType           string              `json:"fixType"`
+		InstrumentationID string              `json:"instrumentationId"`
+		PatchGenerated    bool                `json:"patchGenerated"`
+		PatchApplied      bool                `json:"patchApplied"`
+		Targets           []struct {
 			Workflow    string   `json:"workflow"`
 			Job         string   `json:"job"`
 			Step        string   `json:"step"`
@@ -190,16 +196,19 @@ func TestFixJSONYarnSnykInstrumentationIsValid(t *testing.T) {
 	if !plan.PatchGenerated || plan.PatchApplied || plan.FixType != "instrumentation" {
 		t.Fatalf("patch status = %#v\n%s", plan, output)
 	}
-	if len(plan.Targets) != 1 || plan.Targets[0].Job != "frontend-unit-test" || plan.Targets[0].Step != "AutoCI capture yarn install diagnostics" {
+	if plan.InstrumentationID != "failure-theme-npm-install-failure" {
+		t.Fatalf("instrumentationId = %q", plan.InstrumentationID)
+	}
+	if len(plan.Targets) != 1 || plan.Targets[0].Job != "frontend-unit-test" || plan.Targets[0].Step != "AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]" {
 		t.Fatalf("targets = %#v", plan.Targets)
 	}
 	if len(plan.PatchScope.JobsTouched) != 1 || plan.PatchScope.JobsTouched[0] != "frontend-unit-test" {
 		t.Fatalf("jobsTouched = %#v", plan.PatchScope.JobsTouched)
 	}
-	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture yarn install diagnostics" {
+	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]" {
 		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
 	}
-	for _, want := range []string{"AutoCI capture yarn install diagnostics", "if: failure()", "node --version || true", "downloads.snyk.io", "repo.yarnpkg.com"} {
+	for _, want := range []string{"AutoCI capture yarn install diagnostics [failure-theme-npm-install-failure]", "AutoCI diagnostics for failure-theme-npm-install-failure", "if: failure()", "node --version || true", "downloads.snyk.io", "repo.yarnpkg.com"} {
 		if !strings.Contains(plan.Diff, want) {
 			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
 		}
@@ -534,15 +543,15 @@ func TestFixJSONNeedsMoreEvidenceEmitsJSONOnly(t *testing.T) {
 	if got := strings.Join(plan.Targets[0].DerivedFrom, ","); got != "integration-test:matrix-03,integration-test:matrix-11" {
 		t.Fatalf("derivedFrom = %#v", plan.Targets[0].DerivedFrom)
 	}
-	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture container diagnostics" {
+	if len(plan.PatchScope.StepsTouched) != 1 || plan.PatchScope.StepsTouched[0] != "AutoCI capture container diagnostics [failure-theme-image-pull-failure]" {
 		t.Fatalf("stepsTouched = %#v", plan.PatchScope.StepsTouched)
 	}
-	for _, want := range []string{"AutoCI capture container diagnostics", "if: failure()", "docker info || true", "docker events --since 30m || true"} {
+	for _, want := range []string{"AutoCI capture container diagnostics [failure-theme-image-pull-failure]", "AutoCI diagnostics for failure-theme-image-pull-failure", "if: failure()", "docker info || true", "docker events --since 30m || true"} {
 		if !strings.Contains(plan.Diff, want) {
 			t.Fatalf("diff missing %q:\n%s", want, plan.Diff)
 		}
 	}
-	if strings.Index(plan.Diff, "+      - name: AutoCI capture container diagnostics") < strings.Index(plan.Diff, "       - run: go test ./...") {
+	if strings.Index(plan.Diff, "+      - name: AutoCI capture container diagnostics [failure-theme-image-pull-failure]") < strings.Index(plan.Diff, "       - run: go test ./...") {
 		t.Fatalf("instrumentation was not appended after existing steps:\n%s", plan.Diff)
 	}
 	if strings.Contains(plan.Diff, "unrelated-job") {
@@ -589,12 +598,15 @@ func TestFixHumanOutputShowsRuntimeAndWorkflowJobs(t *testing.T) {
 
 type fixRecordSnapshot struct {
 	Data struct {
-		Workflow       string   `json:"workflow"`
-		Confidence     string   `json:"confidence"`
-		PatchGenerated bool     `json:"patchGenerated"`
-		Reason         string   `json:"reason"`
-		FilesChanged   []string `json:"filesChanged"`
-		ChangeSummary  string   `json:"changeSummary"`
+		SourceItemID           string   `json:"sourceItemId"`
+		Workflow               string   `json:"workflow"`
+		Confidence             string   `json:"confidence"`
+		InstrumentationID      string   `json:"instrumentationId"`
+		InstrumentationApplied bool     `json:"instrumentationApplied"`
+		PatchGenerated         bool     `json:"patchGenerated"`
+		Reason                 string   `json:"reason"`
+		FilesChanged           []string `json:"filesChanged"`
+		ChangeSummary          string   `json:"changeSummary"`
 	} `json:"data"`
 }
 

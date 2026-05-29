@@ -40,6 +40,7 @@ type FailureTheme struct {
 type FailureEvidence struct {
 	RunID              string   `json:"runId,omitempty"`
 	Job                string   `json:"job,omitempty"`
+	InstrumentationID  string   `json:"instrumentationId,omitempty"`
 	LogExcerpt         string   `json:"logExcerpt,omitempty"`
 	Registry           string   `json:"registry,omitempty"`
 	RegistryHost       string   `json:"registryHost,omitempty"`
@@ -77,10 +78,11 @@ type AggregationJob struct {
 }
 
 type Observation struct {
-	Job          string
-	RunID        string
-	Message      string
-	IsAggregator bool
+	Job               string
+	RunID             string
+	Message           string
+	InstrumentationID string
+	IsAggregator      bool
 }
 
 func Analyze(workflow string, runsAnalyzed, failedRuns int, observations []Observation) Analysis {
@@ -91,12 +93,20 @@ func Analyze(workflow string, runsAnalyzed, failedRuns int, observations []Obser
 			aggregationJobs[observation.Job]++
 			continue
 		}
+		instrumentationID := firstNonEmpty(observation.InstrumentationID, FirstInstrumentationID(observation.Message))
 		signature := Signature(observation.Message)
+		if instrumentationID != "" {
+			signature = signatureForInstrumentationID(instrumentationID, signature)
+		}
 		theme := themes[signature]
 		if theme == nil {
+			id := "failure-theme-" + slug(signature)
+			if instrumentationID != "" && strings.HasPrefix(instrumentationID, "failure-theme-") {
+				id = instrumentationID
+			}
 			theme = &themeBuilder{
 				FailureTheme: FailureTheme{
-					ID:             "failure-theme-" + slug(signature),
+					ID:             id,
 					Signature:      signature,
 					ExampleRun:     observation.RunID,
 					Recommendation: Recommendation(signature),
@@ -187,7 +197,52 @@ func ExtractEvidence(signature string, observation Observation) []FailureEvidenc
 	default:
 		extractor = GenericFailureExtractor{}
 	}
-	return extractor.Extract(observation)
+	evidence := extractor.Extract(observation)
+	instrumentationID := firstNonEmpty(observation.InstrumentationID, FirstInstrumentationID(observation.Message))
+	if instrumentationID == "" {
+		return evidence
+	}
+	for i := range evidence {
+		if evidence[i].InstrumentationID == "" {
+			evidence[i].InstrumentationID = instrumentationID
+		}
+	}
+	if len(evidence) == 0 {
+		evidence = append(evidence, baseEvidence(observation, "AutoCI diagnostics for "+instrumentationID))
+	}
+	return evidence
+}
+
+func InstrumentationIDs(message string) []string {
+	re := regexp.MustCompile(`AutoCI diagnostics for ([A-Za-z0-9][A-Za-z0-9._:-]*)`)
+	var result []string
+	seen := map[string]bool{}
+	for _, match := range re.FindAllStringSubmatch(message, -1) {
+		if len(match) < 2 || seen[match[1]] {
+			continue
+		}
+		seen[match[1]] = true
+		result = append(result, match[1])
+	}
+	return result
+}
+
+func FirstInstrumentationID(message string) string {
+	ids := InstrumentationIDs(message)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+func signatureForInstrumentationID(id, fallback string) string {
+	value := strings.TrimPrefix(id, "failure-theme-")
+	value = strings.ReplaceAll(value, "-", " ")
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func IsAggregationJob(job string) bool {
@@ -428,10 +483,21 @@ func (GenericFailureExtractor) Extract(observation Observation) []FailureEvidenc
 
 func baseEvidence(observation Observation, line string) FailureEvidence {
 	return FailureEvidence{
-		RunID:      observation.RunID,
-		Job:        observation.Job,
-		LogExcerpt: truncate(strings.TrimSpace(line), 240),
+		RunID:             observation.RunID,
+		Job:               observation.Job,
+		InstrumentationID: firstNonEmpty(observation.InstrumentationID, FirstInstrumentationID(observation.Message), FirstInstrumentationID(line)),
+		LogExcerpt:        truncate(strings.TrimSpace(line), 240),
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func diagnosticLines(message string, terms []string) []string {
@@ -817,6 +883,7 @@ func evidenceKey(evidence FailureEvidence) string {
 	return strings.Join([]string{
 		evidence.RunID,
 		evidence.Job,
+		evidence.InstrumentationID,
 		evidence.LogExcerpt,
 		evidence.Image,
 	}, "\x00")
