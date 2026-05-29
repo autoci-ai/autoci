@@ -348,6 +348,16 @@ func targetedGaps(report TargetReport) []EvidenceGap {
 		if len(report.Artifacts["packages"]) == 0 && len(report.Artifacts["modules"]) == 0 {
 			gaps = append(gaps, EvidenceGap{Type: "missing_package", Message: "Exact package or dependency constraint not identified"})
 		}
+		if hasSnykIntegrityLogEvidence(report) {
+			gaps = append(gaps,
+				EvidenceGap{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish between network instability, cache corruption, upstream Snyk availability, or checksum verification behavior"},
+				EvidenceGap{Type: "missing_safe_patch_strategy", Message: "AutoCI cannot select a safe surgical workflow patch for the Snyk install failure from cached evidence alone"},
+			)
+			break
+		}
+		if hasNPMResolutionLogEvidence(report) {
+			gaps = append(gaps, EvidenceGap{Type: "missing_safe_patch_strategy", Message: "AutoCI does not yet have a safe surgical workflow patch for dependency resolver or peer-dependency failures"})
+		}
 		if !anyLogContains(report.LogExcerpts, []string{"yn0002", "yn0060", "yn0086", "actual:", "expected:", "lockfile would have been modified", "doesn't provide", "incorrectly met"}) {
 			gaps = append(gaps, EvidenceGap{Type: "missing_root_cause", Message: "Cached logs do not include a resolver, peer dependency, lockfile, or integrity marker"})
 		}
@@ -421,6 +431,10 @@ func targetedEvidenceInvestigation(report TargetReport) []string {
 			steps = append(steps, "Capture package-manager stderr from the failing dependency installation step.")
 		case "missing_test_output":
 			steps = append(steps, "Upload failing test logs from the affected job.")
+		case "missing_root_cause_disambiguation":
+			steps = append(steps, "Add Snyk install/download diagnostics or manually compare failed and successful installs to determine whether the checksum mismatch is network, cache, upstream, or verifier related.")
+		case "missing_safe_patch_strategy":
+			steps = append(steps, "Do not apply a root-cause workflow patch until the evidence identifies a mitigation that directly addresses the failing package-manager behavior.")
 		default:
 			if gap.Message != "" {
 				steps = append(steps, "Collect evidence for gap: "+gap.Message+".")
@@ -449,11 +463,9 @@ func targetedFixes(report TargetReport) []string {
 			"Add registry authentication only if logs show pull access denied or authorization failures.",
 		}
 	case "npm install failure":
-		if anyLogContains(report.LogExcerpts, []string{"actual:", "expected:"}) && anyLogContains(report.LogExcerpts, []string{"snyk"}) {
+		if hasSnykIntegrityLogEvidence(report) {
 			return []string{
-				"Pin or update the Snyk npm package version that downloads the wrapper binary.",
-				"Clear or isolate the package-manager cache used by the Snyk binary download step if checksum mismatches correlate with cached downloads.",
-				"Temporarily replace the postinstall binary download path only after confirming the Snyk package is the failing package.",
+				"Generate instrumentation for Snyk install/download diagnostics or investigate the Snyk package manually before changing dependency versions, caches, or retry behavior.",
 			}
 		}
 		if hasAnyArtifact(report.Artifacts, "packages", "modules") {
@@ -482,17 +494,51 @@ func targetedReadiness(report TargetReport) lifecycle.Readiness {
 			return lifecycle.ReadinessReadyForFix
 		}
 	case "npm install failure":
-		if anyLogContains(report.LogExcerpts, []string{"actual:", "expected:"}) && anyLogContains(report.LogExcerpts, []string{"snyk"}) {
-			return lifecycle.ReadinessReadyForFix
-		}
-		if len(report.CandidateSteps) > 0 && anyLogContains(report.LogExcerpts, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "connection reset", "connection refused", "temporary failure", "network", "rate limit", "toomanyrequests"}) {
-			return lifecycle.ReadinessReadyForFix
-		}
-		if hasAnyArtifact(report.Artifacts, "packages", "modules") && anyLogContains(report.LogExcerpts, []string{"yn0002", "yn0060", "yn0086", "lockfile would have been modified", "doesn't provide", "incorrectly met"}) {
+		if len(report.CandidateSteps) > 0 && hasRetryableInstallLogEvidence(report) {
 			return lifecycle.ReadinessReadyForFix
 		}
 	}
 	return lifecycle.ReadinessNeedsMoreEvidence
+}
+
+func hasSnykIntegrityLogEvidence(report TargetReport) bool {
+	return anyLogContains(report.LogExcerpts, []string{"snyk"}) &&
+		anyLogContains(report.LogExcerpts, []string{"actual:"}) &&
+		anyLogContains(report.LogExcerpts, []string{"expected:"})
+}
+
+func hasNPMResolutionLogEvidence(report TargetReport) bool {
+	return anyLogContains(report.LogExcerpts, []string{
+		"yn0002",
+		"yn0060",
+		"yn0086",
+		"lockfile would have been modified",
+		"immutable install would have modified",
+		"doesn't provide",
+		"incorrectly met",
+		"peer requirements",
+		"post-resolution validation",
+	})
+}
+
+func hasRetryableInstallLogEvidence(report TargetReport) bool {
+	return anyLogContains(report.LogExcerpts, []string{
+		"econnreset",
+		"etimedout",
+		"timeout",
+		"eai_again",
+		"enotfound",
+		"connection reset",
+		"connection refused",
+		"503",
+		"502",
+		"504",
+		"temporary failure",
+		"network",
+		"retry",
+		"rate limit",
+		"toomanyrequests",
+	})
 }
 
 func summaryForTarget(report TargetReport) string {

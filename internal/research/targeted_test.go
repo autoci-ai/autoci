@@ -168,3 +168,77 @@ func TestTargetedResearchAttachesDependencyInstallCandidateStep(t *testing.T) {
 		t.Fatalf("stored readiness mismatch: report=%q stored=%q notes=%q", report.Readiness, stored.Readiness, stored.FixNotes.Readiness)
 	}
 }
+
+func TestTargetedResearchSnykIntegrityNeedsMoreEvidence(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, ".depot", "workflows", "pr.yml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workflow := `jobs:
+  frontend-unit-test:
+    steps:
+      - name: Install dependencies
+        run: corepack enable && yarn install --immutable
+`
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	analysis := failures.Analysis{
+		Workflow: "pr.yml",
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-npm-install-failure",
+			Signature:   "npm install failure",
+			Occurrences: 3,
+			Jobs:        []string{"frontend-unit-test"},
+			Artifacts:   failures.FailureArtifacts{Packages: []string{"snyk"}},
+			Evidence: []failures.FailureEvidence{{
+				RunID:       "run-1",
+				Job:         "frontend-unit-test",
+				PackageName: "snyk",
+				LogExcerpt:  "snyk@npm:1.1302.1 STDERR - actual: abc123",
+			}, {
+				RunID:       "run-1",
+				Job:         "frontend-unit-test",
+				PackageName: "snyk",
+				LogExcerpt:  "snyk@npm:1.1302.1 STDERR - expected: def456",
+			}},
+		}},
+	}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Targeted(dir, "", "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
+		t.Fatalf("readiness = %q", report.Readiness)
+	}
+	for _, want := range []string{"missing_root_cause_disambiguation", "missing_safe_patch_strategy"} {
+		if !hasGapType(report.Gaps, want) {
+			t.Fatalf("missing gap %q in %#v", want, report.Gaps)
+		}
+	}
+	markdown := string(WriteTargetMarkdown(report))
+	for _, want := range []string{
+		"`needs_more_evidence`",
+		"Generate an instrumentation patch",
+		"Snyk install/download diagnostics",
+		"cannot select a safe surgical workflow patch",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func hasGapType(gaps []EvidenceGap, gapType string) bool {
+	for _, gap := range gaps {
+		if gap.Type == gapType {
+			return true
+		}
+	}
+	return false
+}

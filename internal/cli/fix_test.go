@@ -123,10 +123,11 @@ func TestFixRefusesGenericRetryForSnykIntegrityResearch(t *testing.T) {
 	}
 	output := out.String()
 	for _, want := range []string{
-		"Patch: not generated",
-		"Confidence: low",
-		"Evidence suggests a Snyk binary download problem",
-		"generic yarn install retry is not a proven mitigation",
+		"Cannot generate fix.",
+		"Readiness: needs_more_evidence",
+		"Snyk checksum evidence does not distinguish between network instability, cache corruption, upstream Snyk availability, or checksum verification behavior",
+		"AutoCI cannot select a safe surgical workflow patch for the Snyk install failure from cached evidence alone",
+		"Generate an instrumentation patch to capture the missing evidence before assigning a root cause.",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
@@ -170,6 +171,9 @@ func TestFixGeneratesReadableRetryForTransientInstallEvidence(t *testing.T) {
 	target, err := research.Targeted(dir, "", "failure-theme-npm-install-failure")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if target.Readiness != lifecycle.ReadinessReadyForFix {
+		t.Fatalf("test fixture should be ready_for_fix, got %q", target.Readiness)
 	}
 	if _, _, err := state.WriteTargetedResearch(dir, target.ID, target, research.WriteTargetMarkdown(target)); err != nil {
 		t.Fatal(err)
