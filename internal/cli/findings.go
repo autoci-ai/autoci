@@ -23,12 +23,15 @@ func newFindingsCommand() *cobra.Command {
 				limit = 1
 			}
 			items, err := findings.Load(cfg.Path, findings.Options{
-				Workflow:         viper.GetString("workflow"),
-				IncludeFailures:  viper.GetBool("findings-failures"),
-				IncludeProfile:   viper.GetBool("findings-profile"),
-				ReliabilityOnly:  viper.GetBool("findings-reliability"),
-				OptimizationOnly: viper.GetBool("findings-optimization"),
-				Limit:            limit,
+				Workflow:               viper.GetString("workflow"),
+				IncludeFailures:        viper.GetBool("findings-failures"),
+				IncludeProfile:         viper.GetBool("findings-profile"),
+				ReliabilityOnly:        viper.GetBool("findings-reliability"),
+				OptimizationOnly:       viper.GetBool("findings-optimization"),
+				ActiveOnly:             viper.GetBool("findings-active"),
+				NewOnly:                viper.GetBool("findings-new"),
+				AwaitingValidationOnly: viper.GetBool("findings-awaiting-validation"),
+				Limit:                  limit,
 			})
 			if err != nil {
 				return err
@@ -48,6 +51,9 @@ func newFindingsCommand() *cobra.Command {
 	cmd.Flags().Bool("reliability", false, "include reliability findings")
 	cmd.Flags().Bool("optimization", false, "include optimization findings")
 	cmd.Flags().Bool("next", false, "show only the highest-priority next finding")
+	cmd.Flags().Bool("active", false, "show findings with an actionable next step")
+	cmd.Flags().Bool("new", false, "show findings that have not been researched")
+	cmd.Flags().Bool("awaiting-validation", false, "show findings waiting on future CI runs")
 	_ = viper.BindPFlag("findings-limit", cmd.Flags().Lookup("limit"))
 	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
 	_ = viper.BindPFlag("findings-format", cmd.Flags().Lookup("format"))
@@ -56,5 +62,8 @@ func newFindingsCommand() *cobra.Command {
 	_ = viper.BindPFlag("findings-reliability", cmd.Flags().Lookup("reliability"))
 	_ = viper.BindPFlag("findings-optimization", cmd.Flags().Lookup("optimization"))
 	_ = viper.BindPFlag("findings-next", cmd.Flags().Lookup("next"))
+	_ = viper.BindPFlag("findings-active", cmd.Flags().Lookup("active"))
+	_ = viper.BindPFlag("findings-new", cmd.Flags().Lookup("new"))
+	_ = viper.BindPFlag("findings-awaiting-validation", cmd.Flags().Lookup("awaiting-validation"))
 	return cmd
 }

@@ -3,21 +3,27 @@ package findings
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/state"
 )
 
 type Options struct {
-	Workflow         string
-	IncludeFailures  bool
-	IncludeProfile   bool
-	ReliabilityOnly  bool
-	OptimizationOnly bool
-	Limit            int
+	Workflow               string
+	IncludeFailures        bool
+	IncludeProfile         bool
+	ReliabilityOnly        bool
+	OptimizationOnly       bool
+	ActiveOnly             bool
+	NewOnly                bool
+	AwaitingValidationOnly bool
+	Limit                  int
 }
 
 type Finding struct {
@@ -28,14 +34,40 @@ type Finding struct {
 	Workflow    string   `json:"workflow,omitempty"`
 	Jobs        []string `json:"jobs,omitempty"`
 	Evidence    string   `json:"evidence,omitempty"`
+	Gaps        []Gap    `json:"gaps,omitempty"`
 	NextCommand string   `json:"nextCommand"`
+	NextAction  string   `json:"nextAction"`
+	Status      string   `json:"status"`
 
 	Occurrences int     `json:"occurrences,omitempty"`
 	FailureRate float64 `json:"failureRate,omitempty"`
 	Confidence  int     `json:"confidence,omitempty"`
 	State       string  `json:"state,omitempty"`
 
-	kindRank int
+	kindRank   int
+	statusRank int
+}
+
+type Gap struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+type researchState struct {
+	ID        string              `json:"id"`
+	Readiness lifecycle.Readiness `json:"readiness"`
+	Gaps      []Gap               `json:"gaps"`
+	NextSteps []string            `json:"recommendedInvestigation"`
+}
+
+type fixState struct {
+	ID             string              `json:"id"`
+	SourceItemID   string              `json:"sourceItemId"`
+	SourceID       string              `json:"sourceId"`
+	Readiness      lifecycle.Readiness `json:"readiness"`
+	FixType        string              `json:"fixType"`
+	PatchGenerated bool                `json:"patchGenerated"`
+	PatchApplied   bool                `json:"patchApplied"`
 }
 
 func Load(repoPath string, options Options) ([]Finding, error) {
@@ -62,7 +94,9 @@ func Load(repoPath string, options Options) ([]Finding, error) {
 		}
 		result = append(result, findings...)
 	}
+	enrichWithState(repoPath, result)
 	result = filterCategory(result, options)
+	result = filterStatus(result, options)
 	sortFindings(result)
 	if options.Limit > 0 && len(result) > options.Limit {
 		result = result[:options.Limit]
@@ -96,6 +130,8 @@ func loadFailures(repoPath, workflow string) ([]Finding, error) {
 				Jobs:        uniqueStrings(theme.Jobs),
 				Evidence:    failureEvidence(theme),
 				NextCommand: "autoci research " + theme.ID,
+				NextAction:  "research",
+				Status:      "new",
 				Occurrences: theme.Occurrences,
 				FailureRate: rate,
 				Confidence:  confidenceFromOccurrences(theme.Occurrences),
@@ -113,6 +149,8 @@ func loadFailures(repoPath, workflow string) ([]Finding, error) {
 				Jobs:        []string{aggregation.Job},
 				Evidence:    fmt.Sprintf("%d repeated failures reported by %s.", aggregation.Occurrences, aggregation.Job),
 				NextCommand: "autoci research " + id,
+				NextAction:  "research",
+				Status:      "new",
 				Occurrences: aggregation.Occurrences,
 				FailureRate: rate,
 				Confidence:  confidenceFromOccurrences(aggregation.Occurrences),
@@ -152,6 +190,8 @@ func loadProfile(repoPath, workflow string) ([]Finding, error) {
 				Jobs:        uniqueStrings(compactStrings([]string{finding.Job})),
 				Evidence:    finding.Evidence,
 				NextCommand: "autoci research " + finding.ID,
+				NextAction:  "research",
+				Status:      "new",
 				FailureRate: parsedFailureRate(finding.Evidence),
 				Confidence:  confidenceFromSeverity(finding.Severity),
 				kindRank:    kindRank(finding.ID),
@@ -159,6 +199,160 @@ func loadProfile(repoPath, workflow string) ([]Finding, error) {
 		}
 	}
 	return result, nil
+}
+
+func enrichWithState(repoPath string, items []Finding) {
+	researchByID := readResearchState(repoPath)
+	fixByID := readFixState(repoPath)
+	for i := range items {
+		item := &items[i]
+		applyResearchState(item, researchByID[item.ID])
+		applyFixState(item, fixByID[item.ID])
+		item.statusRank = statusRank(item.Status)
+	}
+}
+
+func readResearchState(repoPath string) map[string]researchState {
+	result := map[string]researchState{}
+	base := filepath.Join(repoPath, ".autoci", "research")
+	entries, err := filepath.Glob(filepath.Join(base, "*", "evidence.json"))
+	if err != nil {
+		return result
+	}
+	for _, path := range entries {
+		snapshot, err := readJSONFile[researchState](path)
+		if err != nil || snapshot.ID == "" {
+			continue
+		}
+		result[snapshot.ID] = snapshot
+	}
+	return result
+}
+
+func readJSONFile[T any](path string) (T, error) {
+	var result T
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return result, err
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func readFixState(repoPath string) map[string]fixState {
+	result := map[string]fixState{}
+	records, err := state.List(repoPath, "fixes")
+	if err != nil {
+		return result
+	}
+	for _, record := range records {
+		var fix fixState
+		if !decodeSnapshot(record.Snapshot.Data, &fix) {
+			continue
+		}
+		sourceID := firstNonEmpty(fix.SourceID, fix.SourceItemID)
+		if sourceID == "" {
+			continue
+		}
+		result[sourceID] = fix
+	}
+	return result
+}
+
+func applyResearchState(item *Finding, research researchState) {
+	if research.ID == "" {
+		item.Status = "new"
+		item.NextAction = "research"
+		item.NextCommand = "autoci research " + item.ID
+		return
+	}
+	item.Gaps = research.Gaps
+	switch research.Readiness {
+	case lifecycle.ReadinessReadyForFix:
+		item.Status = "ready_for_fix"
+		item.NextAction = "fix"
+		item.NextCommand = "autoci fix " + item.ID
+	case lifecycle.ReadinessNeedsMoreEvidence, lifecycle.ReadinessNotReady:
+		item.Status = "needs_more_evidence"
+		item.NextAction = "inspect_evidence_gaps"
+		item.NextCommand = nextStepFromResearch(research)
+	case lifecycle.ReadinessFixed:
+		item.Status = "fix_applied"
+		item.NextAction = "wait_for_validation"
+		item.NextCommand = "wait for validation after the applied fix"
+	case lifecycle.ReadinessValidated:
+		item.Status = "validated"
+		item.NextAction = "none"
+		item.NextCommand = ""
+	default:
+		item.Status = "researched"
+		item.NextAction = "review_research"
+		item.NextCommand = "autoci research " + item.ID
+	}
+}
+
+func nextStepFromResearch(research researchState) string {
+	for _, step := range research.NextSteps {
+		step = strings.TrimSpace(step)
+		if step != "" {
+			return step
+		}
+	}
+	if len(research.Gaps) > 0 {
+		return "inspect evidence gaps"
+	}
+	return "review targeted research"
+}
+
+func applyFixState(item *Finding, fix fixState) {
+	if fix.SourceID == "" && fix.SourceItemID == "" {
+		return
+	}
+	if fix.Readiness == lifecycle.ReadinessValidated {
+		item.Status = "validated"
+		item.NextAction = "none"
+		item.NextCommand = ""
+		return
+	}
+	if fix.PatchApplied {
+		item.Status = "awaiting_validation"
+		item.NextAction = "wait_for_runs"
+		item.NextCommand = "wait for future CI runs to collect diagnostics"
+		return
+	}
+	if fix.PatchGenerated {
+		item.Status = "fix_applied"
+		item.NextAction = "apply_fix"
+		item.NextCommand = "autoci fix " + item.ID
+	}
+}
+
+func filterStatus(items []Finding, options Options) []Finding {
+	var result []Finding
+	for _, item := range items {
+		if options.NewOnly && item.Status != "new" {
+			continue
+		}
+		if options.AwaitingValidationOnly && item.Status != "awaiting_validation" {
+			continue
+		}
+		if options.ActiveOnly && !isActiveStatus(item.Status) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result
+}
+
+func isActiveStatus(status string) bool {
+	switch status {
+	case "new", "researched", "needs_more_evidence", "ready_for_fix", "fix_applied":
+		return true
+	default:
+		return false
+	}
 }
 
 func filterCategory(items []Finding, options Options) []Finding {
@@ -177,6 +371,9 @@ func filterCategory(items []Finding, options Options) []Finding {
 func sortFindings(items []Finding) {
 	sort.SliceStable(items, func(i, j int) bool {
 		a, b := items[i], items[j]
+		if a.statusRank != b.statusRank {
+			return a.statusRank < b.statusRank
+		}
 		if a.kindRank != b.kindRank {
 			return a.kindRank < b.kindRank
 		}
@@ -191,6 +388,23 @@ func sortFindings(items []Finding) {
 		}
 		return a.ID < b.ID
 	})
+}
+
+func statusRank(status string) int {
+	switch status {
+	case "new":
+		return 1
+	case "ready_for_fix":
+		return 2
+	case "needs_more_evidence", "researched":
+		return 3
+	case "fix_applied", "awaiting_validation":
+		return 4
+	case "validated":
+		return 5
+	default:
+		return 50
+	}
 }
 
 func failureEvidence(theme failures.FailureTheme) string {

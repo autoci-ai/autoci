@@ -38,10 +38,18 @@ func WriteFindingsTerminal(w io.Writer, items []findings.Finding) {
 		}
 		fmt.Fprintf(w, "%d. %s\n\n", i+1, item.ID)
 		fmt.Fprintf(w, "Source: %s\n", item.Source)
+		fmt.Fprintf(w, "Status: %s\n", item.Status)
 		if item.Evidence != "" {
-			fmt.Fprintf(w, "Evidence: %s\n\n", item.Evidence)
+			fmt.Fprintf(w, "Evidence: %s\n", item.Evidence)
 		}
-		fmt.Fprintln(w, "Next step:")
+		if len(item.Gaps) > 0 {
+			fmt.Fprintln(w, "Gaps:")
+			for _, gap := range item.Gaps {
+				fmt.Fprintf(w, "- %s\n", gap.Message)
+			}
+		}
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Next:")
 		fmt.Fprintf(w, "  %s\n", item.NextCommand)
 		if i != len(items)-1 {
 			fmt.Fprintln(w)

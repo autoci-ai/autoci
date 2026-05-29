@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/state"
 )
@@ -120,8 +121,127 @@ func TestFindingsJSONOutput(t *testing.T) {
 	if items[0].NextCommand != "autoci research failure-theme-image-pull-failure" || items[0].Priority != "high" {
 		t.Fatalf("json item = %#v", items[0])
 	}
+	if items[0].Status != "new" || items[0].NextAction != "research" {
+		t.Fatalf("json lifecycle fields = %#v", items[0])
+	}
 	if !strings.HasPrefix(strings.TrimSpace(output), "[") {
 		t.Fatalf("json output had non-json prefix:\n%s", output)
+	}
+}
+
+func TestFindingsStateNewWhenNoResearchExists(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--new")
+	item := findFindingJSON(t, items, "failure-theme-image-pull-failure")
+	if item.Status != "new" || item.NextAction != "research" || item.NextCommand != "autoci research failure-theme-image-pull-failure" {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsStateResearched(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsResearchState(t, dir, "failure-theme-image-pull-failure", "", nil, nil)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items)
+	item := findFindingJSON(t, items, "failure-theme-image-pull-failure")
+	if item.Status != "researched" || item.NextAction != "review_research" {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsStateNotReadyUsesGaps(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsProfileState(t, dir)
+	writeFindingsResearchState(t, dir, "high-variance-integration-test-matrix-27", lifecycle.ReadinessNotReady, []map[string]string{{
+		"type":    "missing_workflow_step_match",
+		"message": "No workflow step matched the finding with enough confidence",
+	}, {
+		"type":    "missing_logs",
+		"message": "Representative logs are missing",
+	}}, []string{"inspect slow and fast runs for integration-test:matrix-27"})
+
+	output := runFindings(t, dir, "--optimization")
+	for _, want := range []string{
+		"Status: needs_more_evidence",
+		"Gaps:",
+		"- No workflow step matched the finding with enough confidence",
+		"- Representative logs are missing",
+		"inspect slow and fast runs for integration-test:matrix-27",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--optimization")
+	item := findFindingJSON(t, items, "high-variance-integration-test-matrix-27")
+	if item.Status != "needs_more_evidence" || item.NextAction != "inspect_evidence_gaps" || len(item.Gaps) != 2 {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsStateReadyForFix(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsResearchState(t, dir, "failure-theme-npm-install-failure", lifecycle.ReadinessReadyForFix, nil, nil)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items)
+	item := findFindingJSON(t, items, "failure-theme-npm-install-failure")
+	if item.Status != "ready_for_fix" || item.NextAction != "fix" || item.NextCommand != "autoci fix failure-theme-npm-install-failure" {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsStateInstrumentationAppliedAwaitingValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsResearchState(t, dir, "failure-theme-image-pull-failure", lifecycle.ReadinessNeedsMoreEvidence, nil, nil)
+	writeFindingsFixState(t, dir, "failure-theme-image-pull-failure", "instrumentation", true, true)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--awaiting-validation")
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	item := items[0]
+	if item.ID != "failure-theme-image-pull-failure" || item.Status != "awaiting_validation" || item.NextAction != "wait_for_runs" {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsStateRootCauseFixAppliedAwaitingValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsResearchState(t, dir, "failure-theme-npm-install-failure", lifecycle.ReadinessReadyForFix, nil, nil)
+	writeFindingsFixState(t, dir, "failure-theme-npm-install-failure", "root_cause", true, true)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--awaiting-validation")
+	item := findFindingJSON(t, items, "failure-theme-npm-install-failure")
+	if item.Status != "awaiting_validation" || item.NextCommand != "wait for future CI runs to collect diagnostics" {
+		t.Fatalf("item = %#v", item)
+	}
+}
+
+func TestFindingsActiveFilterExcludesAwaitingValidation(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureState(t, dir)
+	writeFindingsFixState(t, dir, "failure-theme-image-pull-failure", "instrumentation", true, true)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--active")
+	if containsFindingJSON(items, "failure-theme-image-pull-failure") {
+		t.Fatalf("awaiting validation item included in active output: %#v", items)
+	}
+	if !containsFindingJSON(items, "failure-theme-npm-install-failure") {
+		t.Fatalf("new active item missing: %#v", items)
 	}
 }
 
@@ -144,6 +264,12 @@ type findingJSON struct {
 	Category    string `json:"category"`
 	Priority    string `json:"priority"`
 	NextCommand string `json:"nextCommand"`
+	NextAction  string `json:"nextAction"`
+	Status      string `json:"status"`
+	Gaps        []struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"gaps"`
 }
 
 func runFindings(t *testing.T, dir string, args ...string) string {
@@ -209,4 +335,51 @@ func writeFindingsProfileState(t *testing.T, dir string) {
 	if err := state.Write(dir, "profile", "pr.yml", prof); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeFindingsResearchState(t *testing.T, dir, id string, readiness lifecycle.Readiness, gaps []map[string]string, nextSteps []string) {
+	t.Helper()
+	evidence := map[string]any{
+		"id":                       id,
+		"readiness":                readiness,
+		"gaps":                     gaps,
+		"recommendedInvestigation": nextSteps,
+	}
+	if _, _, err := state.WriteTargetedResearch(dir, id, evidence, []byte("# report\n")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFindingsFixState(t *testing.T, dir, sourceID, fixType string, patchGenerated, patchApplied bool) {
+	t.Helper()
+	if err := state.WriteFix(dir, map[string]any{
+		"id":             "fix-" + strings.TrimPrefix(sourceID, "failure-theme-"),
+		"sourceItemId":   sourceID,
+		"workflow":       "pr.yml",
+		"fixType":        fixType,
+		"patchGenerated": patchGenerated,
+		"patchApplied":   patchApplied,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findFindingJSON(t *testing.T, items []findingJSON, id string) findingJSON {
+	t.Helper()
+	for _, item := range items {
+		if item.ID == id {
+			return item
+		}
+	}
+	t.Fatalf("finding %q not found in %#v", id, items)
+	return findingJSON{}
+}
+
+func containsFindingJSON(items []findingJSON, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
 }
