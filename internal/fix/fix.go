@@ -382,7 +382,7 @@ func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflo
 		plan.Reason = "The selected opportunity did not identify a target job, so AutoCI cannot prove which install command should change."
 		return
 	}
-	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, original)
+	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, inspection.Commands)
 	if len(candidates) == 0 {
 		candidates = filterCommandsByJobs(inspection.Commands, options.TargetJobs)
 		candidates = filterCommands(candidates, isDependencyInstallCommand)
@@ -644,8 +644,8 @@ func imagePullInstrumentationCommands(gaps []EvidenceGap) []string {
 }
 
 func buildDependencyInstallInstrumentationPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) bool {
-	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, original)
-	if len(candidates) == 0 {
+	candidates := candidateCommandsFromResearch(options.CandidateSteps, options.WorkflowName, inspection.Commands)
+	if len(options.CandidateSteps) == 0 && len(candidates) == 0 {
 		candidates = filterCommandsByJobs(inspection.Commands, options.TargetJobs)
 		candidates = filterCommands(candidates, isDependencyInstallCommand)
 	}
@@ -923,8 +923,7 @@ func commandTargetsFromInventory(repoPath, workflowName string, workflow scanner
 	return result
 }
 
-func candidateCommandsFromResearch(steps []stepresolver.CandidateStep, workflowName string, original []byte) []commandTarget {
-	lines := strings.Split(string(original), "\n")
+func candidateCommandsFromResearch(steps []stepresolver.CandidateStep, workflowName string, commands []commandTarget) []commandTarget {
 	var result []commandTarget
 	for _, step := range steps {
 		if step.Workflow != "" && workflowName != "" && step.Workflow != workflowName {
@@ -933,20 +932,36 @@ func candidateCommandsFromResearch(steps []stepresolver.CandidateStep, workflowN
 		if step.Confidence < 0.65 || !stepresolver.IsDependencyInstallCommand(step.Command) || !isSingleLine(step.Command) {
 			continue
 		}
-		result = append(result, commandTarget{
-			Target: Target{
-				Workflow: workflowName,
-				Job:      step.Job,
-				Step:     step.Command,
-				Command:  step.Command,
-				Line:     step.Line,
-			},
-			LineText:   lineAt(lines, step.Line),
-			Confidence: step.Confidence,
-			Why:        step.Why,
-		})
+		if match, ok := matchingWorkflowCommand(commands, workflowName, step.Job, step.Command); ok {
+			match.Confidence = step.Confidence
+			match.Why = step.Why
+			result = append(result, match)
+		}
 	}
 	return result
+}
+
+func matchingWorkflowCommand(commands []commandTarget, workflowName, job, command string) (commandTarget, bool) {
+	for _, candidate := range commands {
+		if workflowName != "" && candidate.Workflow != "" && candidate.Workflow != workflowName {
+			continue
+		}
+		if candidate.Job != job {
+			continue
+		}
+		if normalizeShellCommand(candidate.Command) != normalizeShellCommand(command) {
+			continue
+		}
+		if candidate.Line <= 0 || candidate.LineText == "" || !strings.Contains(normalizeShellCommand(candidate.LineText), normalizeShellCommand(command)) {
+			continue
+		}
+		return candidate, true
+	}
+	return commandTarget{}, false
+}
+
+func normalizeShellCommand(command string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(command)), " ")
 }
 
 func applyLineDiff(original string, plan Plan) string {

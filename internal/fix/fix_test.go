@@ -8,6 +8,7 @@ import (
 
 	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/scanner"
+	stepresolver "github.com/autoci-ai/autoci/internal/workflow"
 	"gopkg.in/yaml.v3"
 )
 
@@ -268,6 +269,118 @@ func TestGenerateYarnInstrumentationAfterInlineRunStepPreservesIndentation(t *te
 	var parsed any
 	if err := yaml.Unmarshal([]byte(patched), &parsed); err != nil {
 		t.Fatalf("patched workflow does not parse as YAML: %v\n%s", err, patched)
+	}
+}
+
+func TestGenerateYarnInstrumentationUsesExactWorkflowJobAndCommand(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  go-unit-test:
+    steps:
+      - uses: actions/setup-go@v5
+      - run: go test ./...
+  frontend-unit-test:
+    steps:
+      - uses: actions/setup-node@v4
+      - run: corepack enable && yarn install --immutable
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Occurrences:  3,
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
+		CandidateSteps: []stepresolver.CandidateStep{{
+			Step: stepresolver.Step{
+				Workflow: "pr.yml",
+				Job:      "frontend-unit-test",
+				Command:  "corepack enable && yarn install --immutable",
+				Line:     4,
+			},
+			Confidence: 0.94,
+			Why:        []string{"job and command from research evidence"},
+		}},
+		Gaps: []EvidenceGap{
+			{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish root cause"},
+			{Type: "missing_safe_patch_strategy", Message: "AutoCI cannot select a safe patch"},
+		},
+		LogExcerpts: []string{
+			"snyk@npm:1.1302.1 STDERR - actual: abc123",
+			"snyk@npm:1.1302.1 STDERR - expected: def456",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.PatchGenerated {
+		t.Fatalf("expected instrumentation patch, got reason: %s", plan.Reason)
+	}
+	if len(plan.Targets) != 1 || plan.Targets[0].Job != "frontend-unit-test" || plan.Targets[0].Line == 4 {
+		t.Fatalf("target does not match actual modified workflow line: %#v", plan.Targets)
+	}
+	patched := applyLineDiff(readWorkflow(t, workflow), plan)
+	setupGoIndex := strings.Index(patched, "- uses: actions/setup-go@v5")
+	installIndex := strings.Index(patched, "- run: corepack enable && yarn install --immutable")
+	diagnosticsIndex := strings.Index(patched, "- name: AutoCI capture yarn install diagnostics")
+	testIndex := strings.Index(patched, "- run: yarn test")
+	if !(setupGoIndex >= 0 && installIndex > setupGoIndex && diagnosticsIndex > installIndex && testIndex > diagnosticsIndex) {
+		t.Fatalf("diagnostics were not inserted after frontend yarn install:\n%s", patched)
+	}
+	if strings.Contains(plan.Diff, "actions/setup-go") || strings.Contains(plan.Diff, "go test ./...") {
+		t.Fatalf("diff touched unrelated Go job:\n%s", plan.Diff)
+	}
+	var parsed any
+	if err := yaml.Unmarshal([]byte(patched), &parsed); err != nil {
+		t.Fatalf("patched workflow does not parse as YAML: %v\n%s", err, patched)
+	}
+}
+
+func TestGenerateYarnInstrumentationRefusesMissingExactCommand(t *testing.T) {
+	workflow := writeWorkflow(t, `jobs:
+  frontend-unit-test:
+    steps:
+      - run: yarn test
+`)
+
+	plan, err := Generate(Options{
+		Workflow:     workflow,
+		WorkflowName: "pr.yml",
+		Opportunity:  "failure-theme-npm-install-failure",
+		DryRun:       true,
+		TargetJobs:   []string{"frontend-unit-test"},
+		Occurrences:  3,
+		Signature:    "npm install failure",
+		Readiness:    lifecycle.ReadinessNeedsMoreEvidence,
+		CandidateSteps: []stepresolver.CandidateStep{{
+			Step: stepresolver.Step{
+				Workflow: "pr.yml",
+				Job:      "frontend-unit-test",
+				Command:  "corepack enable && yarn install --immutable",
+				Line:     4,
+			},
+			Confidence: 0.94,
+		}},
+		Gaps: []EvidenceGap{
+			{Type: "missing_root_cause_disambiguation", Message: "Snyk checksum evidence does not distinguish root cause"},
+			{Type: "missing_safe_patch_strategy", Message: "AutoCI cannot select a safe patch"},
+		},
+		LogExcerpts: []string{
+			"snyk@npm:1.1302.1 STDERR - actual: abc123",
+			"snyk@npm:1.1302.1 STDERR - expected: def456",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PatchGenerated {
+		t.Fatalf("expected no patch when exact job+command is missing:\n%s", plan.Diff)
+	}
+	if !strings.Contains(plan.Reason, "could not find a dependency install step") {
+		t.Fatalf("reason = %q", plan.Reason)
 	}
 }
 
