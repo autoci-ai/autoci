@@ -35,6 +35,7 @@ type Finding struct {
 	Jobs        []string `json:"jobs,omitempty"`
 	Evidence    string   `json:"evidence,omitempty"`
 	Gaps        []Gap    `json:"gaps,omitempty"`
+	BlockedBy   []string `json:"blockedBy,omitempty"`
 	NextCommand string   `json:"nextCommand"`
 	NextAction  string   `json:"nextAction"`
 	Status      string   `json:"status"`
@@ -97,8 +98,9 @@ func Load(repoPath string, options Options) ([]Finding, error) {
 	}
 	enrichWithState(repoPath, result)
 	result = filterCategory(result, options)
-	result = filterStatus(result, options)
 	result = deduplicateByID(result)
+	markAggregateWorkflowFailures(result)
+	result = filterStatus(result, options)
 	deprioritizeCorrelatedFlakyJobs(result)
 	sortFindings(result)
 	if options.Limit > 0 && len(result) > options.Limit {
@@ -371,6 +373,46 @@ func filterCategory(items []Finding, options Options) []Finding {
 	return result
 }
 
+func markAggregateWorkflowFailures(items []Finding) {
+	for i := range items {
+		if !isAggregateFinding(items[i].ID) {
+			continue
+		}
+		blockedBy := specificReliabilityFindingsForWorkflow(items, items[i].Workflow)
+		if len(blockedBy) == 0 {
+			continue
+		}
+		items[i].Status = "aggregate"
+		items[i].NextAction = "investigate_specific_findings"
+		items[i].NextCommand = "investigate specific failure themes first"
+		items[i].BlockedBy = blockedBy
+		items[i].symptomRank = 2
+		items[i].statusRank = statusRank(items[i].Status)
+		items[i].Evidence = appendEvidence(items[i].Evidence, "Blocked by more specific reliability findings: "+strings.Join(blockedBy, ", ")+".")
+	}
+}
+
+func specificReliabilityFindingsForWorkflow(items []Finding, workflow string) []string {
+	var result []string
+	for _, item := range items {
+		if item.Category != "reliability" || isAggregateFinding(item.ID) {
+			continue
+		}
+		if workflow != "" && item.Workflow != "" && !workflowMatches(item.Workflow, workflow) {
+			continue
+		}
+		switch findingKind(item.ID) {
+		case "failure-theme", "flaky-job":
+			result = append(result, item.ID)
+		}
+	}
+	return uniqueStrings(result)
+}
+
+func isAggregateFinding(id string) bool {
+	return findingKind(id) == "repeated-failures-workflow" || findingKind(id) == "repeated-failures"
+}
+
 func deduplicateByID(items []Finding) []Finding {
 	byID := map[string]Finding{}
 	var order []string
@@ -400,6 +442,7 @@ func mergeDuplicateFinding(a, b Finding) Finding {
 	}
 	primary.Jobs = uniqueStrings(append(primary.Jobs, secondary.Jobs...))
 	primary.Gaps = uniqueGaps(append(primary.Gaps, secondary.Gaps...))
+	primary.BlockedBy = uniqueStrings(append(primary.BlockedBy, secondary.BlockedBy...))
 	primary.Occurrences = maxInt(primary.Occurrences, secondary.Occurrences)
 	primary.FailureRate = maxFloat(primary.FailureRate, secondary.FailureRate)
 	primary.Confidence = maxInt(primary.Confidence, secondary.Confidence)
@@ -539,6 +582,8 @@ func statusRank(status string) int {
 		return 4
 	case "validated":
 		return 5
+	case "aggregate":
+		return 6
 	default:
 		return 50
 	}

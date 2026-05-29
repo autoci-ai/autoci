@@ -106,6 +106,41 @@ func TestFindingsRanksSpecificFailureThemeAboveCorrelatedFlakyJob(t *testing.T) 
 	}
 }
 
+func TestFindingsMarksRepeatedFailuresWorkflowAsAggregateWhenSpecificFindingsExist(t *testing.T) {
+	dir := t.TempDir()
+	writeFindingsFailureStateWithAggregation(t, dir)
+	writeFindingsFlakyFrontendProfileState(t, dir)
+
+	var items []findingJSON
+	runFindingsJSON(t, dir, &items, "--reliability")
+	aggregate := findFindingJSON(t, items, "repeated-failures-workflow")
+	if aggregate.Status != "aggregate" || aggregate.NextAction != "investigate_specific_findings" || aggregate.NextCommand != "investigate specific failure themes first" {
+		t.Fatalf("aggregate item = %#v", aggregate)
+	}
+	for _, want := range []string{"failure-theme-image-pull-failure", "failure-theme-npm-install-failure", "flaky-job-frontend-unit-test"} {
+		if !containsString(aggregate.BlockedBy, want) {
+			t.Fatalf("aggregate blockedBy missing %q: %#v", want, aggregate.BlockedBy)
+		}
+	}
+
+	next := []findingJSON{}
+	runFindingsJSON(t, dir, &next, "--next", "--reliability")
+	if len(next) != 1 || next[0].ID == "repeated-failures-workflow" {
+		t.Fatalf("next should be specific finding, got %#v", next)
+	}
+
+	output := runFindings(t, dir, "--reliability")
+	for _, want := range []string{
+		"repeated-failures-workflow",
+		"Status: aggregate",
+		"investigate specific failure themes first",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestFindingsLimitAndNext(t *testing.T) {
 	dir := t.TempDir()
 	writeFindingsFailureState(t, dir)
@@ -299,14 +334,15 @@ func TestFindingsEmptyStateDirectory(t *testing.T) {
 }
 
 type findingJSON struct {
-	ID          string `json:"id"`
-	Source      string `json:"source"`
-	Category    string `json:"category"`
-	Priority    string `json:"priority"`
-	Evidence    string `json:"evidence"`
-	NextCommand string `json:"nextCommand"`
-	NextAction  string `json:"nextAction"`
-	Status      string `json:"status"`
+	ID          string   `json:"id"`
+	Source      string   `json:"source"`
+	Category    string   `json:"category"`
+	Priority    string   `json:"priority"`
+	Evidence    string   `json:"evidence"`
+	NextCommand string   `json:"nextCommand"`
+	NextAction  string   `json:"nextAction"`
+	Status      string   `json:"status"`
+	BlockedBy   []string `json:"blockedBy"`
 	Gaps        []struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
@@ -351,6 +387,33 @@ func writeFindingsFailureState(t *testing.T, dir string) {
 			Signature:   "npm install failure",
 			Occurrences: 2,
 			Jobs:        []string{"frontend-unit-test"},
+		}},
+	}
+	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFindingsFailureStateWithAggregation(t *testing.T, dir string) {
+	t.Helper()
+	analysis := failures.Analysis{
+		Workflow:     "pr.yml",
+		RunsAnalyzed: 10,
+		FailedRuns:   4,
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-image-pull-failure",
+			Signature:   "image pull failure",
+			Occurrences: 3,
+			Jobs:        []string{"integration-test:matrix-03", "integration-test:matrix-11"},
+		}, {
+			ID:          "failure-theme-npm-install-failure",
+			Signature:   "npm install failure",
+			Occurrences: 2,
+			Jobs:        []string{"frontend-unit-test"},
+		}},
+		AggregationJobs: []failures.AggregationJob{{
+			Job:         "gate",
+			Occurrences: 4,
 		}},
 	}
 	if err := state.Write(dir, "failures", "pr.yml", analysis); err != nil {
@@ -475,4 +538,13 @@ func indexFindingJSON(items []findingJSON, id string) int {
 		}
 	}
 	return -1
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
