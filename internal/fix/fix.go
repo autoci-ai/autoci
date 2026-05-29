@@ -164,11 +164,25 @@ func NewRecord(plan Plan, dryRun bool) Record {
 		Reason:          plan.Reason,
 		PatchGenerated:  plan.PatchGenerated,
 		PatchApplied:    plan.PatchApplied,
-		Targets:         plan.Targets,
+		Targets:         emptyTargets(plan.Targets),
 		PatchScope:      plan.PatchScope,
-		FilesChanged:    plan.FilesChanged,
+		FilesChanged:    emptyStrings(plan.FilesChanged),
 		DryRun:          dryRun,
 	}
+}
+
+func emptyStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
+
+func emptyTargets(values []Target) []Target {
+	if values == nil {
+		return []Target{}
+	}
+	return values
 }
 
 func basePlan(id, sourceID, workflow, evidence string) Plan {
