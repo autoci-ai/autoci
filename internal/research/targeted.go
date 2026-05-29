@@ -38,6 +38,7 @@ type TargetReport struct {
 	Evidence                 []string                     `json:"evidence"`
 	WhatWeKnow               []string                     `json:"whatWeKnow"`
 	WhatWeDoNotKnowYet       []string                     `json:"whatWeDoNotKnowYet"`
+	Gaps                     []EvidenceGap                `json:"gaps,omitempty"`
 	RootCauseHypotheses      []RootCauseHypothesis        `json:"rootCauseHypotheses"`
 	RecommendedInvestigation []string                     `json:"recommendedInvestigation"`
 	CandidateFixes           []string                     `json:"candidateFixes"`
@@ -76,6 +77,11 @@ type FixNotes struct {
 	Hypotheses     []RootCauseHypothesis        `json:"hypotheses,omitempty"`
 	NextSteps      []string                     `json:"nextSteps,omitempty"`
 	CandidateSteps []stepresolver.CandidateStep `json:"candidateSteps,omitempty"`
+}
+
+type EvidenceGap struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 type targetAccumulator struct {
@@ -214,7 +220,8 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.CurrentFinding = CurrentFinding{ID: report.ID, Type: report.Type, Workflow: report.Workflow, Jobs: report.Jobs, Occurrences: report.Occurrences, Impact: report.Impact, Confidence: report.Confidence}
 	report.Evidence = targetedEvidence(report)
 	report.WhatWeKnow = targetedKnownFacts(report)
-	report.WhatWeDoNotKnowYet = targetedGaps(report)
+	report.Gaps = targetedGaps(report)
+	report.WhatWeDoNotKnowYet = gapMessages(report.Gaps)
 	report.RootCauseHypotheses = targetedHypotheses(report)
 	report.RecommendedInvestigation = targetedInvestigation(report)
 	report.CandidateFixes = targetedFixes(report)
@@ -320,8 +327,8 @@ func targetedKnownFacts(report TargetReport) []string {
 	return facts
 }
 
-func targetedGaps(report TargetReport) []string {
-	var gaps []string
+func targetedGaps(report TargetReport) []EvidenceGap {
+	var gaps []EvidenceGap
 	signature := ""
 	if report.FailureTheme != nil {
 		signature = report.FailureTheme.Signature
@@ -329,30 +336,38 @@ func targetedGaps(report TargetReport) []string {
 	switch signature {
 	case "image pull failure", "image pull timeout":
 		if len(report.Artifacts["images"]) == 0 {
-			gaps = append(gaps, "The exact failed image reference is not present in cached evidence.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_image", Message: "Exact failing image reference not identified"})
 		}
 		if len(report.Artifacts["registries"]) == 0 && len(report.Artifacts["hosts"]) == 0 {
-			gaps = append(gaps, "The registry host is not present in cached evidence.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_registry", Message: "Registry host could not be determined from cached evidence"})
 		}
 		if !anyLogContains(report.LogExcerpts, []string{"manifest unknown", "pull access denied", "toomanyrequests", "rate limit", "timeout", "connection reset", "connection refused", "no such host"}) {
-			gaps = append(gaps, "The exact pull error is not present in cached evidence.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_pull_error", Message: "Exact pull error not present in cached evidence"})
 		}
 	case "npm install failure":
 		if len(report.Artifacts["packages"]) == 0 && len(report.Artifacts["modules"]) == 0 {
-			gaps = append(gaps, "The exact package or dependency constraint is not identified.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_package", Message: "Exact package or dependency constraint not identified"})
 		}
 		if !anyLogContains(report.LogExcerpts, []string{"yn0002", "yn0060", "yn0086", "actual:", "expected:", "lockfile would have been modified", "doesn't provide", "incorrectly met"}) {
-			gaps = append(gaps, "The cached logs do not include a resolver, peer dependency, lockfile, or integrity marker.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_root_cause", Message: "Cached logs do not include a resolver, peer dependency, lockfile, or integrity marker"})
 		}
 	default:
 		if len(report.LogExcerpts) == 0 {
-			gaps = append(gaps, "Representative log excerpts are not present in cached evidence.")
+			gaps = append(gaps, EvidenceGap{Type: "missing_logs", Message: "Representative log excerpts are not present in cached evidence"})
 		}
 	}
-	if len(gaps) == 0 {
-		gaps = append(gaps, "No major evidence gap is visible in the cached AutoCI state.")
-	}
 	return gaps
+}
+
+func gapMessages(gaps []EvidenceGap) []string {
+	if len(gaps) == 0 {
+		return []string{"No major evidence gap is visible in the cached AutoCI state."}
+	}
+	var result []string
+	for _, gap := range gaps {
+		result = append(result, gap.Message)
+	}
+	return result
 }
 
 func targetedHypotheses(report TargetReport) []RootCauseHypothesis {

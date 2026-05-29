@@ -232,10 +232,14 @@ func TestFixRejectsResearchEvidenceThatIsNotReady(t *testing.T) {
 		"id":        "failure-theme-npm-install-failure",
 		"workflow":  "pr.yml",
 		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
+		"gaps": []map[string]any{
+			{"type": "missing_package", "message": "Exact package or dependency constraint not identified"},
+			{"type": "missing_root_cause", "message": "Cached logs do not include a resolver, peer dependency, lockfile, or integrity marker"},
+		},
 	})
 
 	err := runFix(t, dir)
-	if err == nil || !strings.Contains(err.Error(), `not "ready_for_fix"`) {
+	if err == nil || !strings.Contains(err.Error(), "Readiness: needs_more_evidence") || !strings.Contains(err.Error(), "Exact package or dependency constraint not identified") {
 		t.Fatalf("expected not-ready error, got %v", err)
 	}
 }

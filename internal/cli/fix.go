@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/autoci-ai/autoci/internal/fix"
 	"github.com/autoci-ai/autoci/internal/lifecycle"
@@ -72,7 +73,7 @@ func newFixCommand() *cobra.Command {
 						return fmt.Errorf("research evidence for %s has invalid readiness %q", opportunityID, target.Readiness)
 					}
 					if target.Readiness != lifecycle.ReadinessReadyForFix {
-						return fmt.Errorf("research evidence for %s is %q, not %q; no safe fix will be generated", opportunityID, target.Readiness, lifecycle.ReadinessReadyForFix)
+						return fmt.Errorf("cannot generate fix.\n\nReadiness: %s\n\nMissing evidence:\n%s", target.Readiness, formatEvidenceGaps(target.Gaps))
 					}
 					candidateSteps = target.CandidateSteps
 					hypotheses = fixHypotheses(target.RootCauseHypotheses)
@@ -164,4 +165,20 @@ func fixHypotheses(values []research.RootCauseHypothesis) []fix.Hypothesis {
 		result = append(result, fix.Hypothesis{Summary: value.Summary, Confidence: value.Confidence, Evidence: value.Evidence})
 	}
 	return result
+}
+
+func formatEvidenceGaps(gaps []research.EvidenceGap) string {
+	if len(gaps) == 0 {
+		return "- No structured evidence gaps were recorded. Rerun autoci research for this ID."
+	}
+	var lines []string
+	for _, gap := range gaps {
+		if gap.Message != "" {
+			lines = append(lines, "- "+gap.Message)
+		}
+	}
+	if len(lines) == 0 {
+		return "- No structured evidence gaps were recorded. Rerun autoci research for this ID."
+	}
+	return strings.Join(lines, "\n")
 }

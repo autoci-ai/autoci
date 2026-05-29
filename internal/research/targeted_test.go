@@ -46,14 +46,43 @@ func TestTargetedResearchImagePullWithoutImageIsEvidenceSafe(t *testing.T) {
 	if report.ID != "failure-theme-image-pull-failure" || report.Workflow != "pr.yml" {
 		t.Fatalf("report target = %#v", report.CurrentFinding)
 	}
+	if report.Readiness != lifecycle.ReadinessNeedsMoreEvidence {
+		t.Fatalf("readiness = %q", report.Readiness)
+	}
+	if len(report.Gaps) == 0 {
+		t.Fatalf("expected structured evidence gaps")
+	}
 	if report.WorkflowContext == nil || !strings.Contains(report.WorkflowContext.Content, "go-lint") {
 		t.Fatalf("workflow context = %#v", report.WorkflowContext)
 	}
 	markdown := string(WriteTargetMarkdown(report))
-	for _, want := range []string{"# AutoCI Research Report: failure-theme-image-pull-failure", "The exact failed image reference is not present", "`needs_more_evidence`"} {
+	for _, want := range []string{"# AutoCI Research Report: failure-theme-image-pull-failure", "Exact failing image reference not identified", "`needs_more_evidence`"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("report missing %q:\n%s", want, markdown)
 		}
+	}
+	for _, gap := range report.Gaps {
+		if gap.Type == "" || gap.Message == "" {
+			t.Fatalf("empty gap = %#v", gap)
+		}
+		if !strings.Contains(markdown, gap.Message) {
+			t.Fatalf("markdown missing gap %q:\n%s", gap.Message, markdown)
+		}
+	}
+	evidencePath, _, err := state.WriteTargetedResearch(dir, report.ID, report, []byte(markdown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored TargetReport
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Gaps) != len(report.Gaps) {
+		t.Fatalf("stored gaps = %#v, want %#v", stored.Gaps, report.Gaps)
 	}
 	for _, forbidden := range []string{"docker.io", "ghcr.io", "rate limit"} {
 		if strings.Contains(markdown, forbidden) {
