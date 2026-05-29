@@ -1,0 +1,91 @@
+package cli
+
+import (
+	"fmt"
+
+	"github.com/autoci-ai/autoci/internal/fix"
+	"github.com/autoci-ai/autoci/internal/provider"
+	"github.com/autoci-ai/autoci/internal/report"
+	"github.com/autoci-ai/autoci/internal/scanner"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+)
+
+func newFixCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "fix [opportunity-id]",
+		Short: "Generate and apply CI workflow fixes",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			format := viper.GetString("fix-format")
+			if format != "text" && format != "json" {
+				return fmt.Errorf("unsupported format %q: expected text or json", format)
+			}
+			dryRun := viper.GetBool("fix-dry-run")
+			limit := viper.GetInt("fix-limit")
+			repo := viper.GetString("fix-repo")
+
+			workflows, err := scanner.Scan(cfg.Path)
+			if err != nil {
+				return err
+			}
+			workflow, err := scanner.SelectWorkflow(cfg.Path, workflows, viper.GetString("workflow"), "fix")
+			if err != nil {
+				return err
+			}
+			workflowName := scanner.WorkflowName(cfg.Path, workflow)
+			opportunityID := ""
+			evidence := ""
+			if len(args) > 0 {
+				opportunityID = args[0]
+				evidence = "Selected opportunity: " + opportunityID
+			} else {
+				depot := provider.DepotProvider{
+					Repo:           repo,
+					RepoPath:       cfg.Path,
+					Limit:          limit,
+					LocalWorkflows: []scanner.Workflow{workflow},
+				}
+				analysis, err := depot.Failures(cmd.Context(), workflowName)
+				if err != nil {
+					return fmt.Errorf("select fix opportunity: %w", err)
+				}
+				if len(analysis.FailureThemes) == 0 {
+					return fmt.Errorf("no failure theme found to fix; pass an opportunity id explicitly")
+				}
+				theme := analysis.FailureThemes[0]
+				opportunityID = theme.ID
+				evidence = fmt.Sprintf("%d occurrences of %s across %d jobs.", theme.Occurrences, theme.Signature, len(theme.Jobs))
+			}
+
+			plan, err := fix.Generate(fix.Options{
+				RepoPath:     cfg.Path,
+				Workflow:     workflow,
+				WorkflowName: workflowName,
+				Opportunity:  opportunityID,
+				DryRun:       dryRun,
+				Evidence:     evidence,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				return report.WriteFixJSON(cmd.OutOrStdout(), plan)
+			}
+			report.WriteFixTerminal(cmd.OutOrStdout(), plan, dryRun)
+			return nil
+		},
+	}
+
+	cmd.Flags().Bool("dry-run", false, "generate the fix plan and diff without modifying files")
+	cmd.Flags().String("format", "text", "output format: text or json")
+	cmd.Flags().Int("limit", 50, "number of recent workflow runs to inspect when selecting a fix")
+	cmd.Flags().String("repo", "", "repository filter in owner/name format")
+	cmd.Flags().String("workflow", "", "workflow to fix by basename or relative path")
+	_ = viper.BindPFlag("fix-dry-run", cmd.Flags().Lookup("dry-run"))
+	_ = viper.BindPFlag("fix-format", cmd.Flags().Lookup("format"))
+	_ = viper.BindPFlag("fix-limit", cmd.Flags().Lookup("limit"))
+	_ = viper.BindPFlag("fix-repo", cmd.Flags().Lookup("repo"))
+	_ = viper.BindPFlag("workflow", cmd.Flags().Lookup("workflow"))
+	return cmd
+}

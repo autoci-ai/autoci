@@ -76,6 +76,15 @@ autoci failures --workflow pr.yml --format json
 autoci failures --workflow pr.yml --report failures.md
 ```
 
+Generate an experimental workflow fix:
+
+```bash
+autoci fix --workflow pr.yml
+autoci fix failure-theme-image-pull-failure --workflow pr.yml
+autoci fix --workflow pr.yml --dry-run
+autoci fix --workflow pr.yml --dry-run --format json
+```
+
 Validate with Depot:
 
 ```bash
@@ -147,3 +156,7 @@ Current research output includes a top recommendation and the top three highest-
 ## Failure Analysis
 
 `autoci failures` inspects recent failed workflow runs and groups failures into deterministic failure themes. Aggregation jobs such as `gate`, `required`, and `status` are excluded from root-cause ranking by default. It is intended to answer what is breaking, while `profile` answers what is happening and `research` answers what to investigate next.
+
+## Fixes
+
+`autoci fix` creates a local branch and applies a workflow change when AutoCI has a deterministic fix generator for the selected opportunity. Fixes are treated as experiments: every generated change includes a hypothesis, evidence, change summary, success criteria, confidence, and the validation command to run next. AutoCI does not commit, push, or create pull requests.
