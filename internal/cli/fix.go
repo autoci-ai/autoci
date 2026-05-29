@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/autoci-ai/autoci/internal/fix"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/provider"
 	"github.com/autoci-ai/autoci/internal/report"
 	"github.com/autoci-ai/autoci/internal/research"
@@ -46,7 +47,7 @@ func newFixCommand() *cobra.Command {
 			var candidateSteps []stepresolver.CandidateStep
 			var hypotheses []fix.Hypothesis
 			var logExcerpts []string
-			fixReadiness := ""
+			readiness := lifecycle.Readiness("")
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -64,10 +65,19 @@ func newFixCommand() *cobra.Command {
 					evidence = "Selected opportunity: " + opportunityID
 				}
 				if target, err := state.ReadTargetedResearch[research.TargetReport](cfg.Path, opportunityID); err == nil {
+					if target.Readiness == "" {
+						return fmt.Errorf("research evidence for %s is missing readiness; rerun autoci research %s", opportunityID, opportunityID)
+					}
+					if !target.Readiness.Valid() {
+						return fmt.Errorf("research evidence for %s has invalid readiness %q", opportunityID, target.Readiness)
+					}
+					if target.Readiness != lifecycle.ReadinessReadyForFix {
+						return fmt.Errorf("research evidence for %s is %q, not %q; no safe fix will be generated", opportunityID, target.Readiness, lifecycle.ReadinessReadyForFix)
+					}
 					candidateSteps = target.CandidateSteps
 					hypotheses = fixHypotheses(target.RootCauseHypotheses)
 					logExcerpts = target.LogExcerpts
-					fixReadiness = target.FixReadiness
+					readiness = target.Readiness
 					if len(target.Jobs) > 0 {
 						targetJobs = target.Jobs
 					}
@@ -119,7 +129,7 @@ func newFixCommand() *cobra.Command {
 				CandidateSteps: candidateSteps,
 				Hypotheses:     hypotheses,
 				LogExcerpts:    logExcerpts,
-				FixReadiness:   fixReadiness,
+				Readiness:      readiness,
 			})
 			if err != nil {
 				return err

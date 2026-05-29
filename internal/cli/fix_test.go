@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/research"
 	"github.com/autoci-ai/autoci/internal/state"
 )
@@ -196,6 +197,49 @@ func TestFixGeneratesReadableRetryForTransientInstallEvidence(t *testing.T) {
 	}
 }
 
+func TestFixRejectsResearchEvidenceWithMissingReadiness(t *testing.T) {
+	dir := setupNoInstallFixState(t)
+	writeRawResearchEvidence(t, dir, "failure-theme-npm-install-failure", map[string]any{
+		"id":             "failure-theme-npm-install-failure",
+		"workflow":       "pr.yml",
+		"jobs":           []string{"frontend-unit-test"},
+		"candidateSteps": []map[string]any{{"workflow": "pr.yml", "job": "frontend-unit-test", "command": "yarn install --immutable", "confidence": 0.9}},
+	})
+
+	err := runFix(t, dir)
+	if err == nil || !strings.Contains(err.Error(), "is missing readiness") {
+		t.Fatalf("expected missing readiness error, got %v", err)
+	}
+}
+
+func TestFixRejectsResearchEvidenceWithInvalidReadiness(t *testing.T) {
+	dir := setupNoInstallFixState(t)
+	writeRawResearchEvidence(t, dir, "failure-theme-npm-install-failure", map[string]any{
+		"id":        "failure-theme-npm-install-failure",
+		"workflow":  "pr.yml",
+		"readiness": "maybe_ready",
+	})
+
+	err := runFix(t, dir)
+	if err == nil || !strings.Contains(err.Error(), "invalid readiness") {
+		t.Fatalf("expected invalid readiness error, got %v", err)
+	}
+}
+
+func TestFixRejectsResearchEvidenceThatIsNotReady(t *testing.T) {
+	dir := setupNoInstallFixState(t)
+	writeRawResearchEvidence(t, dir, "failure-theme-npm-install-failure", map[string]any{
+		"id":        "failure-theme-npm-install-failure",
+		"workflow":  "pr.yml",
+		"readiness": lifecycle.ReadinessNeedsMoreEvidence,
+	})
+
+	err := runFix(t, dir)
+	if err == nil || !strings.Contains(err.Error(), `not "ready_for_fix"`) {
+		t.Fatalf("expected not-ready error, got %v", err)
+	}
+}
+
 type fixRecordSnapshot struct {
 	Data struct {
 		Workflow       string   `json:"workflow"`
@@ -205,6 +249,30 @@ type fixRecordSnapshot struct {
 		FilesChanged   []string `json:"filesChanged"`
 		ChangeSummary  string   `json:"changeSummary"`
 	} `json:"data"`
+}
+
+func runFix(t *testing.T, dir string) error {
+	t.Helper()
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--path", dir, "fix", "failure-theme-npm-install-failure", "--dry-run"})
+	return root.Execute()
+}
+
+func writeRawResearchEvidence(t *testing.T, dir, id string, data map[string]any) {
+	t.Helper()
+	targetDir := filepath.Join(dir, ".autoci", "research", id)
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "evidence.json"), append(encoded, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func setupNoInstallFixState(t *testing.T) string {

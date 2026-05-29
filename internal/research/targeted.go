@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/profile"
 	"github.com/autoci-ai/autoci/internal/scanner"
 	"github.com/autoci-ai/autoci/internal/state"
@@ -40,7 +41,7 @@ type TargetReport struct {
 	RootCauseHypotheses      []RootCauseHypothesis        `json:"rootCauseHypotheses"`
 	RecommendedInvestigation []string                     `json:"recommendedInvestigation"`
 	CandidateFixes           []string                     `json:"candidateFixes"`
-	FixReadiness             string                       `json:"fixReadiness"`
+	Readiness                lifecycle.Readiness          `json:"readiness"`
 	FixNotes                 FixNotes                     `json:"fixNotes"`
 }
 
@@ -68,7 +69,7 @@ type CurrentFinding struct {
 
 type FixNotes struct {
 	ID             string                       `json:"id"`
-	Readiness      string                       `json:"readiness"`
+	Readiness      lifecycle.Readiness          `json:"readiness"`
 	Workflow       string                       `json:"workflow,omitempty"`
 	Jobs           []string                     `json:"jobs,omitempty"`
 	Artifacts      map[string][]string          `json:"artifacts,omitempty"`
@@ -217,8 +218,8 @@ func (acc *targetAccumulator) report(repoPath string) TargetReport {
 	report.RootCauseHypotheses = targetedHypotheses(report)
 	report.RecommendedInvestigation = targetedInvestigation(report)
 	report.CandidateFixes = targetedFixes(report)
-	report.FixReadiness = targetedFixReadiness(report)
-	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.FixReadiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
+	report.Readiness = targetedReadiness(report)
+	report.FixNotes = FixNotes{ID: report.ID, Readiness: report.Readiness, Workflow: report.Workflow, Jobs: report.Jobs, Artifacts: report.Artifacts, Hypotheses: report.RootCauseHypotheses, NextSteps: report.RecommendedInvestigation, CandidateSteps: report.CandidateSteps}
 	return report
 }
 
@@ -253,7 +254,7 @@ func WriteTargetMarkdown(report TargetReport) []byte {
 	writeMarkdownSection(&out, "Recommended investigation", report.RecommendedInvestigation)
 	writeMarkdownSection(&out, "Candidate fixes", report.CandidateFixes)
 	fmt.Fprintln(&out, "## Fix readiness")
-	fmt.Fprintf(&out, "`%s`\n\n", report.FixReadiness)
+	fmt.Fprintf(&out, "`%s`\n\n", report.Readiness)
 	fmt.Fprintln(&out, "## Notes for `autoci fix`")
 	encoded, _ := json.MarshalIndent(report.FixNotes, "", "  ")
 	fmt.Fprintln(&out, "```json")
@@ -423,28 +424,31 @@ func targetedFixes(report TargetReport) []string {
 	return []string{"No concrete fix is ready from the cached evidence alone."}
 }
 
-func targetedFixReadiness(report TargetReport) string {
+func targetedReadiness(report TargetReport) lifecycle.Readiness {
 	if report.ProfileFinding != nil && report.FailureTheme == nil {
-		return "informational_only"
+		return lifecycle.ReadinessNotReady
 	}
 	if report.FailureTheme == nil {
-		return "needs_more_evidence"
+		return lifecycle.ReadinessNeedsMoreEvidence
 	}
 	signature := report.FailureTheme.Signature
 	switch signature {
 	case "image pull failure", "image pull timeout":
 		if len(report.Artifacts["images"]) > 0 && anyLogContains(report.LogExcerpts, []string{"manifest unknown", "pull access denied", "toomanyrequests", "rate limit", "timeout", "connection reset", "connection refused", "no such host"}) {
-			return "ready_for_fix"
+			return lifecycle.ReadinessReadyForFix
 		}
 	case "npm install failure":
 		if anyLogContains(report.LogExcerpts, []string{"actual:", "expected:"}) && anyLogContains(report.LogExcerpts, []string{"snyk"}) {
-			return "ready_for_fix"
+			return lifecycle.ReadinessReadyForFix
+		}
+		if len(report.CandidateSteps) > 0 && anyLogContains(report.LogExcerpts, []string{"econnreset", "etimedout", "timeout", "eai_again", "enotfound", "connection reset", "connection refused", "temporary failure", "network", "rate limit", "toomanyrequests"}) {
+			return lifecycle.ReadinessReadyForFix
 		}
 		if hasAnyArtifact(report.Artifacts, "packages", "modules") && anyLogContains(report.LogExcerpts, []string{"yn0002", "yn0060", "yn0086", "lockfile would have been modified", "doesn't provide", "incorrectly met"}) {
-			return "ready_for_fix"
+			return lifecycle.ReadinessReadyForFix
 		}
 	}
-	return "needs_more_evidence"
+	return lifecycle.ReadinessNeedsMoreEvidence
 }
 
 func summaryForTarget(report TargetReport) string {

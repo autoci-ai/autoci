@@ -105,3 +105,39 @@ func TestFindItemReadsNormalizedFailureEvidence(t *testing.T) {
 		t.Fatalf("extracted items = %#v", item.ExtractedItems)
 	}
 }
+
+func TestUpdateTargetedResearchReadiness(t *testing.T) {
+	dir := t.TempDir()
+	evidence := map[string]any{
+		"id":        "failure-theme-npm-install-failure",
+		"readiness": "ready_for_fix",
+		"fixNotes": map[string]any{
+			"readiness": "ready_for_fix",
+		},
+	}
+	if _, _, err := WriteTargetedResearch(dir, "failure-theme-npm-install-failure", evidence, []byte("# report\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateTargetedResearchReadiness(dir, "failure-theme-npm-install-failure", "validated"); err != nil {
+		t.Fatal(err)
+	}
+	var stored struct {
+		Readiness string `json:"readiness"`
+		FixNotes  struct {
+			Readiness string `json:"readiness"`
+		} `json:"fixNotes"`
+	}
+	loaded, err := ReadTargetedResearch[struct {
+		Readiness string `json:"readiness"`
+		FixNotes  struct {
+			Readiness string `json:"readiness"`
+		} `json:"fixNotes"`
+	}](dir, "failure-theme-npm-install-failure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored = *loaded
+	if stored.Readiness != "validated" || stored.FixNotes.Readiness != "validated" {
+		t.Fatalf("readiness not updated: %#v", stored)
+	}
+}

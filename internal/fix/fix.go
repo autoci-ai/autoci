@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/scanner"
 	stepresolver "github.com/autoci-ai/autoci/internal/workflow"
 	"gopkg.in/yaml.v3"
@@ -62,7 +63,7 @@ type Options struct {
 	CandidateSteps []stepresolver.CandidateStep
 	Hypotheses     []Hypothesis
 	LogExcerpts    []string
-	FixReadiness   string
+	Readiness      lifecycle.Readiness
 }
 
 type Hypothesis struct {
@@ -633,7 +634,7 @@ func supportsInstallRetry(options Options) bool {
 
 func researchText(options Options) string {
 	var parts []string
-	parts = append(parts, options.Evidence, options.Signature, options.FixReadiness)
+	parts = append(parts, options.Evidence, options.Signature, string(options.Readiness))
 	parts = append(parts, options.LogExcerpts...)
 	for key, values := range options.Artifacts {
 		parts = append(parts, key)

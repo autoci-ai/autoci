@@ -92,6 +92,27 @@ func ReadTargetedResearch[T any](repoPath, id string) (*T, error) {
 	return &result, nil
 }
 
+func UpdateTargetedResearchReadiness(repoPath, id string, readiness any) error {
+	path := filepath.Join(repoPath, ".autoci", "research", slug(id), "evidence.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var object map[string]any
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	object["readiness"] = readiness
+	if notes, ok := object["fixNotes"].(map[string]any); ok {
+		notes["readiness"] = readiness
+	}
+	encoded, err := json.MarshalIndent(object, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+}
+
 func WriteFix(repoPath string, data any) error {
 	id := extractID(data)
 	if id == "" {

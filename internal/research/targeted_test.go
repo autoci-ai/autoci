@@ -1,12 +1,14 @@
 package research
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/lifecycle"
 	"github.com/autoci-ai/autoci/internal/state"
 )
 
@@ -87,7 +89,7 @@ func TestTargetedResearchAttachesDependencyInstallCandidateStep(t *testing.T) {
 				RunID:       "run-1",
 				Job:         "frontend-unit-test",
 				PackageName: "snyk",
-				LogExcerpt:  "corepack enable && yarn install --immutable failed while installing snyk",
+				LogExcerpt:  "corepack enable && yarn install --immutable failed with ETIMEDOUT while installing snyk",
 			}},
 		}},
 	}
@@ -102,6 +104,9 @@ func TestTargetedResearchAttachesDependencyInstallCandidateStep(t *testing.T) {
 	if len(report.CandidateSteps) != 1 {
 		t.Fatalf("candidate steps = %#v", report.CandidateSteps)
 	}
+	if report.Readiness != lifecycle.ReadinessReadyForFix {
+		t.Fatalf("readiness = %q", report.Readiness)
+	}
 	step := report.CandidateSteps[0]
 	if step.Job != "frontend-unit-test" || step.Command != "corepack enable && yarn install --immutable" || step.Confidence < 0.90 {
 		t.Fatalf("candidate step = %#v", step)
@@ -109,5 +114,23 @@ func TestTargetedResearchAttachesDependencyInstallCandidateStep(t *testing.T) {
 	markdown := string(WriteTargetMarkdown(report))
 	if !strings.Contains(markdown, "Candidate workflow steps") || !strings.Contains(markdown, "corepack enable && yarn install --immutable") {
 		t.Fatalf("markdown missing candidate step:\n%s", markdown)
+	}
+	if !strings.Contains(markdown, "`ready_for_fix`") || !strings.Contains(markdown, `"readiness": "ready_for_fix"`) {
+		t.Fatalf("markdown readiness does not match evidence model:\n%s", markdown)
+	}
+	evidencePath, _, err := state.WriteTargetedResearch(dir, report.ID, report, []byte(markdown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(evidencePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored TargetReport
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Readiness != report.Readiness || stored.FixNotes.Readiness != report.Readiness {
+		t.Fatalf("stored readiness mismatch: report=%q stored=%q notes=%q", report.Readiness, stored.Readiness, stored.FixNotes.Readiness)
 	}
 }
