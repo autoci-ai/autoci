@@ -1,0 +1,365 @@
+package findings
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/autoci-ai/autoci/internal/failures"
+	"github.com/autoci-ai/autoci/internal/profile"
+	"github.com/autoci-ai/autoci/internal/state"
+)
+
+type Options struct {
+	Workflow         string
+	IncludeFailures  bool
+	IncludeProfile   bool
+	ReliabilityOnly  bool
+	OptimizationOnly bool
+	Limit            int
+}
+
+type Finding struct {
+	ID          string   `json:"id"`
+	Source      string   `json:"source"`
+	Category    string   `json:"category"`
+	Priority    string   `json:"priority"`
+	Workflow    string   `json:"workflow,omitempty"`
+	Jobs        []string `json:"jobs,omitempty"`
+	Evidence    string   `json:"evidence,omitempty"`
+	NextCommand string   `json:"nextCommand"`
+
+	Occurrences int     `json:"occurrences,omitempty"`
+	FailureRate float64 `json:"failureRate,omitempty"`
+	Confidence  int     `json:"confidence,omitempty"`
+	State       string  `json:"state,omitempty"`
+
+	kindRank int
+}
+
+func Load(repoPath string, options Options) ([]Finding, error) {
+	if !options.IncludeFailures && !options.IncludeProfile {
+		options.IncludeFailures = true
+		options.IncludeProfile = true
+	}
+	if !options.ReliabilityOnly && !options.OptimizationOnly {
+		options.ReliabilityOnly = true
+		options.OptimizationOnly = true
+	}
+	var result []Finding
+	if options.IncludeFailures {
+		findings, err := loadFailures(repoPath, options.Workflow)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, findings...)
+	}
+	if options.IncludeProfile {
+		findings, err := loadProfile(repoPath, options.Workflow)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, findings...)
+	}
+	result = filterCategory(result, options)
+	sortFindings(result)
+	if options.Limit > 0 && len(result) > options.Limit {
+		result = result[:options.Limit]
+	}
+	return result, nil
+}
+
+func loadFailures(repoPath, workflow string) ([]Finding, error) {
+	records, err := state.List(repoPath, "failures")
+	if err != nil {
+		return nil, err
+	}
+	var result []Finding
+	for _, record := range records {
+		if !workflowMatches(record.Workflow, workflow) {
+			continue
+		}
+		var analysis failures.Analysis
+		if !decodeSnapshot(record.Snapshot.Data, &analysis) {
+			continue
+		}
+		recordWorkflow := firstNonEmpty(record.Workflow, analysis.Workflow)
+		rate := failureRate(analysis)
+		for _, theme := range analysis.FailureThemes {
+			result = append(result, Finding{
+				ID:          theme.ID,
+				Source:      "failures",
+				Category:    "reliability",
+				Priority:    "high",
+				Workflow:    recordWorkflow,
+				Jobs:        uniqueStrings(theme.Jobs),
+				Evidence:    failureEvidence(theme),
+				NextCommand: "autoci research " + theme.ID,
+				Occurrences: theme.Occurrences,
+				FailureRate: rate,
+				Confidence:  confidenceFromOccurrences(theme.Occurrences),
+				kindRank:    kindRank(theme.ID),
+			})
+		}
+		for _, aggregation := range analysis.AggregationJobs {
+			id := "repeated-failures-workflow"
+			result = append(result, Finding{
+				ID:          id,
+				Source:      "failures",
+				Category:    "reliability",
+				Priority:    "high",
+				Workflow:    recordWorkflow,
+				Jobs:        []string{aggregation.Job},
+				Evidence:    fmt.Sprintf("%d repeated failures reported by %s.", aggregation.Occurrences, aggregation.Job),
+				NextCommand: "autoci research " + id,
+				Occurrences: aggregation.Occurrences,
+				FailureRate: rate,
+				Confidence:  confidenceFromOccurrences(aggregation.Occurrences),
+				kindRank:    kindRank(id),
+			})
+		}
+	}
+	return result, nil
+}
+
+func loadProfile(repoPath, workflow string) ([]Finding, error) {
+	records, err := state.List(repoPath, "profile")
+	if err != nil {
+		return nil, err
+	}
+	var result []Finding
+	for _, record := range records {
+		if !workflowMatches(record.Workflow, workflow) {
+			continue
+		}
+		var prof profile.Profile
+		if !decodeSnapshot(record.Snapshot.Data, &prof) {
+			continue
+		}
+		for _, finding := range prof.Findings {
+			findingWorkflow := firstNonEmpty(finding.Workflow, record.Workflow)
+			if workflow != "" && !workflowMatches(findingWorkflow, workflow) {
+				continue
+			}
+			category := categoryForID(finding.ID)
+			result = append(result, Finding{
+				ID:          finding.ID,
+				Source:      "profile",
+				Category:    category,
+				Priority:    priorityFor(category, finding.Severity),
+				Workflow:    findingWorkflow,
+				Jobs:        uniqueStrings(compactStrings([]string{finding.Job})),
+				Evidence:    finding.Evidence,
+				NextCommand: "autoci research " + finding.ID,
+				FailureRate: parsedFailureRate(finding.Evidence),
+				Confidence:  confidenceFromSeverity(finding.Severity),
+				kindRank:    kindRank(finding.ID),
+			})
+		}
+	}
+	return result, nil
+}
+
+func filterCategory(items []Finding, options Options) []Finding {
+	var result []Finding
+	for _, item := range items {
+		if item.Category == "reliability" && options.ReliabilityOnly {
+			result = append(result, item)
+		}
+		if item.Category == "optimization" && options.OptimizationOnly {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func sortFindings(items []Finding) {
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.kindRank != b.kindRank {
+			return a.kindRank < b.kindRank
+		}
+		if a.FailureRate != b.FailureRate {
+			return a.FailureRate > b.FailureRate
+		}
+		if a.Occurrences != b.Occurrences {
+			return a.Occurrences > b.Occurrences
+		}
+		if a.Confidence != b.Confidence {
+			return a.Confidence > b.Confidence
+		}
+		return a.ID < b.ID
+	})
+}
+
+func failureEvidence(theme failures.FailureTheme) string {
+	switch len(theme.Jobs) {
+	case 0:
+		return fmt.Sprintf("%d occurrences.", theme.Occurrences)
+	case 1:
+		return fmt.Sprintf("%d occurrences in %s.", theme.Occurrences, theme.Jobs[0])
+	default:
+		return fmt.Sprintf("%d occurrences across %s.", theme.Occurrences, strings.Join(theme.Jobs, ", "))
+	}
+}
+
+func failureRate(analysis failures.Analysis) float64 {
+	if analysis.RunsAnalyzed <= 0 {
+		return 0
+	}
+	return float64(analysis.FailedRuns) / float64(analysis.RunsAnalyzed)
+}
+
+func parsedFailureRate(evidence string) float64 {
+	lower := strings.ToLower(evidence)
+	index := strings.Index(lower, "failure rate ")
+	if index < 0 {
+		return 0
+	}
+	start := index + len("failure rate ")
+	end := start
+	for end < len(lower) && ((lower[end] >= '0' && lower[end] <= '9') || lower[end] == '.') {
+		end++
+	}
+	if end == start || end >= len(lower) || lower[end] != '%' {
+		return 0
+	}
+	var value float64
+	if _, err := fmt.Sscanf(lower[start:end], "%f", &value); err != nil {
+		return 0
+	}
+	return value / 100
+}
+
+func categoryForID(id string) string {
+	switch findingKind(id) {
+	case "failure-theme", "flaky-job", "repeated-failures-workflow", "repeated-failures":
+		return "reliability"
+	default:
+		return "optimization"
+	}
+}
+
+func priorityFor(category, severity string) string {
+	if category == "reliability" {
+		return "high"
+	}
+	if severity == "high" {
+		return "medium"
+	}
+	return "medium"
+}
+
+func kindRank(id string) int {
+	switch findingKind(id) {
+	case "failure-theme":
+		return 1
+	case "flaky-job":
+		return 2
+	case "repeated-failures-workflow", "repeated-failures":
+		return 3
+	case "high-variance":
+		return 4
+	case "long-running-job":
+		return 5
+	default:
+		return 50
+	}
+}
+
+func findingKind(id string) string {
+	for _, prefix := range []string{
+		"failure-theme",
+		"flaky-job",
+		"repeated-failures-workflow",
+		"repeated-failures",
+		"high-variance",
+		"long-running-job",
+		"high-leverage-slow-job",
+		"critical-path-blocker",
+	} {
+		if id == prefix || strings.HasPrefix(id, prefix+"-") {
+			return prefix
+		}
+	}
+	return id
+}
+
+func confidenceFromOccurrences(occurrences int) int {
+	switch {
+	case occurrences >= 5:
+		return 90
+	case occurrences >= 3:
+		return 75
+	case occurrences >= 2:
+		return 60
+	default:
+		return 45
+	}
+}
+
+func confidenceFromSeverity(severity string) int {
+	switch severity {
+	case "high":
+		return 85
+	case "medium":
+		return 70
+	case "low":
+		return 55
+	default:
+		return 50
+	}
+}
+
+func workflowMatches(stored, requested string) bool {
+	if requested == "" {
+		return true
+	}
+	stored = strings.TrimSuffix(stored, ".yml")
+	stored = strings.TrimSuffix(stored, ".yaml")
+	requested = strings.TrimSuffix(requested, ".yml")
+	requested = strings.TrimSuffix(requested, ".yaml")
+	return stored == requested
+}
+
+func decodeSnapshot(value any, target any) bool {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func compactStrings(values []string) []string {
+	var result []string
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
