@@ -20,12 +20,14 @@ type Snapshot struct {
 }
 
 type StoredItem struct {
-	ID          string
-	Evidence    string
-	Source      string
-	Jobs        []string
-	Occurrences int
-	Signature   string
+	ID             string
+	Evidence       string
+	Source         string
+	Jobs           []string
+	Occurrences    int
+	Signature      string
+	ExtractedItems []string
+	Artifacts      map[string][]string
 }
 
 func Write(repoPath, command, workflow string, data any) error {
@@ -78,16 +80,23 @@ func WriteFix(repoPath string, data any) error {
 }
 
 func FindItem(repoPath, workflow, id string) (StoredItem, bool) {
+	var result StoredItem
+	found := false
 	for _, command := range []string{"research", "failures", "profile"} {
 		snapshot, err := Read(repoPath, command, workflow)
 		if err != nil {
 			continue
 		}
 		if item, ok := findInSnapshot(command, snapshot, id); ok {
-			return item, true
+			if !found {
+				result = item
+				found = true
+				continue
+			}
+			result = mergeStoredItems(result, item)
 		}
 	}
-	return StoredItem{}, false
+	return result, found
 }
 
 func Read(repoPath, command, workflow string) (Snapshot, error) {
@@ -162,15 +171,38 @@ func findInArray(source string, value any, id string) (StoredItem, bool) {
 			jobs = append(jobs, job)
 		}
 		return StoredItem{
-			ID:          id,
-			Evidence:    evidence,
-			Source:      source,
-			Jobs:        jobs,
-			Occurrences: intValue(object["occurrences"]),
-			Signature:   stringValue(object["signature"]),
+			ID:             id,
+			Evidence:       evidence,
+			Source:         source,
+			Jobs:           jobs,
+			Occurrences:    intValue(object["occurrences"]),
+			Signature:      stringValue(object["signature"]),
+			ExtractedItems: extractedItems(object),
+			Artifacts:      artifactMap(object["artifacts"]),
 		}, true
 	}
 	return StoredItem{}, false
+}
+
+func mergeStoredItems(base, extra StoredItem) StoredItem {
+	if base.Evidence == "" {
+		base.Evidence = extra.Evidence
+	}
+	if base.Signature == "" {
+		base.Signature = extra.Signature
+	}
+	if base.Occurrences == 0 {
+		base.Occurrences = extra.Occurrences
+	}
+	base.Jobs = mergeStringSlices(base.Jobs, extra.Jobs)
+	base.ExtractedItems = mergeStringSlices(base.ExtractedItems, extra.ExtractedItems)
+	if base.Artifacts == nil {
+		base.Artifacts = map[string][]string{}
+	}
+	for key, items := range extra.Artifacts {
+		base.Artifacts[key] = mergeStringSlices(base.Artifacts[key], items)
+	}
+	return base
 }
 
 func idsMatch(stored, requested string) bool {
@@ -186,6 +218,7 @@ func normalizeItemID(id string) string {
 	if strings.HasPrefix(id, "failure-theme-") {
 		id = strings.TrimPrefix(id, "failure-theme-")
 	}
+	id = strings.TrimPrefix(id, "failure-")
 	return id
 }
 
@@ -234,6 +267,64 @@ func intValue(value any) int {
 	default:
 		return 0
 	}
+}
+
+func extractedItems(object map[string]any) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, items := range artifactMap(object["artifacts"]) {
+		for _, item := range items {
+			if !seen[item] {
+				seen[item] = true
+				result = append(result, item)
+			}
+		}
+	}
+	evidenceItems, ok := object["evidence"].([]any)
+	if !ok {
+		return result
+	}
+	for _, item := range evidenceItems {
+		evidence, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, extracted := range stringSlice(evidence["extractedItems"]) {
+			if !seen[extracted] {
+				seen[extracted] = true
+				result = append(result, extracted)
+			}
+		}
+	}
+	return result
+}
+
+func artifactMap(value any) map[string][]string {
+	result := map[string][]string{}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return result
+	}
+	for key, raw := range object {
+		items := stringSlice(raw)
+		if len(items) > 0 {
+			result[key] = items
+		}
+	}
+	return result
+}
+
+func mergeStringSlices(a, b []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, value := range append(a, b...) {
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
 }
 
 func slug(value string) string {

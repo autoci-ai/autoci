@@ -4,8 +4,8 @@ import "testing"
 
 func TestAnalyzeGroupsFailuresByTheme(t *testing.T) {
 	analysis := Analyze("pr.yml", 31, 7, []Observation{
-		{Job: "go-lint", RunID: "run-1", Message: "image pull timeout"},
-		{Job: "integration-test:matrix-03", RunID: "run-2", Message: "image pull failed"},
+		{Job: "go-lint", RunID: "run-1", Message: "failed to pull image docker://rhysd/actionlint:latest context deadline exceeded"},
+		{Job: "integration-test:matrix-03", RunID: "run-2", Message: "image pull failed from ghcr.io/example/image:latest"},
 		{Job: "frontend-unit-test", RunID: "run-3", Message: "npm install failed"},
 		{Job: "gate", RunID: "run-4", Message: "Complete job name: gate"},
 	})
@@ -24,6 +24,12 @@ func TestAnalyzeGroupsFailuresByTheme(t *testing.T) {
 	}
 	if len(analysis.FailureThemes[0].Jobs) != 2 {
 		t.Fatalf("jobs = %#v", analysis.FailureThemes[0].Jobs)
+	}
+	if len(analysis.FailureThemes[0].Evidence) != 2 {
+		t.Fatalf("evidence = %#v", analysis.FailureThemes[0].Evidence)
+	}
+	if len(analysis.FailureThemes[0].Artifacts.Images) != 2 {
+		t.Fatalf("images = %#v", analysis.FailureThemes[0].Artifacts.Images)
 	}
 	if len(analysis.AggregationJobs) != 1 || analysis.AggregationJobs[0].Job != "gate" {
 		t.Fatalf("aggregation jobs = %#v", analysis.AggregationJobs)

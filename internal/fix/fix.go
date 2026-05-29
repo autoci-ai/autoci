@@ -57,6 +57,7 @@ type Options struct {
 	TargetJobs   []string
 	Occurrences  int
 	Signature    string
+	Artifacts    map[string][]string
 }
 
 type Record struct {
@@ -209,10 +210,21 @@ func basePlan(id, sourceID, workflow, evidence string) Plan {
 }
 
 func planImagePull(plan *Plan, inspection workflowInspection, options Options) {
-	images := filterImagesByJobs(inspection.Images, options.TargetJobs)
-	if len(images) == 0 {
-		images = inspection.Images
+	evidenceImages := options.Artifacts["images"]
+	if len(evidenceImages) > 0 {
+		for _, image := range evidenceImages {
+			target := Target{Workflow: options.WorkflowName, Image: image, Step: image}
+			if match, ok := findImageTarget(inspection.Images, image, options.TargetJobs); ok {
+				target = match.Target
+				plan.Confidence = "high"
+			}
+			plan.Targets = append(plan.Targets, target)
+		}
+		plan.Reason = "Failure logs explicitly referenced image artifacts. AutoCI will not patch image references until it can resolve a safe immutable replacement."
+		plan.ChangeSummary = "Patch not generated. Evidence-backed image references should be pinned manually to immutable digests or known versions."
+		return
 	}
+	images := filterImagesByJobs(inspection.Images, options.TargetJobs)
 	for _, image := range images {
 		plan.Targets = append(plan.Targets, image.Target)
 	}
@@ -223,6 +235,16 @@ func planImagePull(plan *Plan, inspection workflowInspection, options Options) {
 	}
 	plan.Reason = "AutoCI detected image pull failures but cannot safely resolve or pin the exact image references automatically."
 	plan.ChangeSummary = "Patch not generated. Candidate image references should be pinned manually to immutable digests or known versions."
+}
+
+func findImageTarget(images []imageTarget, image string, jobs []string) (imageTarget, bool) {
+	candidates := filterImagesByJobs(images, jobs)
+	for _, candidate := range candidates {
+		if candidate.Image == image {
+			return candidate, true
+		}
+	}
+	return imageTarget{}, false
 }
 
 func buildDependencyInstallPatch(plan *Plan, original []byte, inspection workflowInspection, options Options) {

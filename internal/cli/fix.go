@@ -40,6 +40,7 @@ func newFixCommand() *cobra.Command {
 			var targetJobs []string
 			occurrences := 0
 			signature := ""
+			artifacts := map[string][]string{}
 			if len(args) > 0 {
 				if opportunityID != "" && opportunityID != args[0] {
 					return fmt.Errorf("--id and positional opportunity id differ")
@@ -52,6 +53,7 @@ func newFixCommand() *cobra.Command {
 					targetJobs = item.Jobs
 					occurrences = item.Occurrences
 					signature = item.Signature
+					artifacts = item.Artifacts
 				} else {
 					evidence = "Selected opportunity: " + opportunityID
 				}
@@ -75,6 +77,14 @@ func newFixCommand() *cobra.Command {
 				targetJobs = theme.Jobs
 				occurrences = theme.Occurrences
 				signature = theme.Signature
+				artifacts = map[string][]string{
+					"images":      theme.Artifacts.Images,
+					"packages":    theme.Artifacts.Packages,
+					"modules":     theme.Artifacts.Modules,
+					"urls":        theme.Artifacts.URLs,
+					"hosts":       theme.Artifacts.Hosts,
+					"dockerfiles": theme.Artifacts.Dockerfiles,
+				}
 			}
 
 			plan, err := fix.Generate(fix.Options{
@@ -87,6 +97,7 @@ func newFixCommand() *cobra.Command {
 				TargetJobs:   targetJobs,
 				Occurrences:  occurrences,
 				Signature:    signature,
+				Artifacts:    artifacts,
 			})
 			if err != nil {
 				return err

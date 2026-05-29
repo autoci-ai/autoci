@@ -34,6 +34,10 @@ func WriteFailuresTerminal(w io.Writer, analysis *failures.Analysis, verbose boo
 		if theme.ExampleRun != "" {
 			fmt.Fprintf(w, "   Example run: %s\n", theme.ExampleRun)
 		}
+		if verbose {
+			writeFailureArtifacts(w, theme, "   ")
+			writeFailureEvidence(w, theme, "   ")
+		}
 		fmt.Fprintf(w, "   Recommendation: %s\n", theme.Recommendation)
 	}
 	writeAggregationJobs(w, analysis, verbose)
@@ -79,9 +83,59 @@ func WriteFailuresMarkdown(w io.Writer, analysis *failures.Analysis) error {
 		if theme.ExampleRun != "" {
 			fmt.Fprintf(w, "- Example run: `%s`\n", theme.ExampleRun)
 		}
+		writeFailureArtifacts(w, theme, "")
+		if len(theme.Evidence) > 0 {
+			fmt.Fprintln(w, "- Evidence:")
+			for _, evidence := range theme.Evidence {
+				fmt.Fprintf(w, "  - Run `%s`, job `%s`: %s\n", evidence.RunID, evidence.Job, evidence.LogExcerpt)
+			}
+		}
 		fmt.Fprintf(w, "- Recommendation: %s\n\n", theme.Recommendation)
 	}
 	return nil
+}
+
+func writeFailureArtifacts(w io.Writer, theme failures.FailureTheme, indent string) {
+	groups := []struct {
+		label string
+		items []string
+	}{
+		{"Extracted image references", theme.Artifacts.Images},
+		{"Extracted packages", theme.Artifacts.Packages},
+		{"Extracted modules", theme.Artifacts.Modules},
+		{"Extracted URLs", theme.Artifacts.URLs},
+		{"Extracted hosts", theme.Artifacts.Hosts},
+		{"Extracted Dockerfiles", theme.Artifacts.Dockerfiles},
+	}
+	for _, group := range groups {
+		if len(group.items) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "%s%s:\n", indent, group.label)
+		for _, item := range group.items {
+			fmt.Fprintf(w, "%s- %s\n", indent, item)
+		}
+	}
+}
+
+func writeFailureEvidence(w io.Writer, theme failures.FailureTheme, indent string) {
+	if len(theme.Evidence) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "%sExample evidence:\n", indent)
+	limit := len(theme.Evidence)
+	if limit > 3 {
+		limit = 3
+	}
+	for _, evidence := range theme.Evidence[:limit] {
+		fmt.Fprintf(w, "%s- Run: %s Job: %s\n", indent, evidence.RunID, evidence.Job)
+		if evidence.LogExcerpt != "" {
+			fmt.Fprintf(w, "%s  %s\n", indent, evidence.LogExcerpt)
+		}
+		if len(evidence.ExtractedItems) > 0 {
+			fmt.Fprintf(w, "%s  Extracted: %v\n", indent, evidence.ExtractedItems)
+		}
+	}
 }
 
 func writeAggregationJobs(w io.Writer, analysis *failures.Analysis, verbose bool) {

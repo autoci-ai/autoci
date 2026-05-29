@@ -107,9 +107,12 @@ func TestGenerateRefusesSingleOccurrenceDependencyFailure(t *testing.T) {
 
 func TestGenerateImagePullFailureProducesPlanOnlyWithCandidateReferences(t *testing.T) {
 	workflow := writeWorkflow(t, `jobs:
-  actionlint:
+  go-lint:
     steps:
       - uses: docker://rhysd/actionlint:latest
+  actionlint:
+    steps:
+      - uses: docker://unrelated/actionlint:latest
 `)
 
 	plan, err := Generate(Options{
@@ -117,9 +120,12 @@ func TestGenerateImagePullFailureProducesPlanOnlyWithCandidateReferences(t *test
 		WorkflowName: "pr.yml",
 		Opportunity:  "reliability-image-pull-failure",
 		DryRun:       true,
-		TargetJobs:   []string{"actionlint"},
+		TargetJobs:   []string{"go-lint", "integration-test:matrix-03"},
 		Occurrences:  6,
 		Signature:    "image pull failure",
+		Artifacts: map[string][]string{
+			"images": []string{"docker://rhysd/actionlint:latest"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,8 +133,11 @@ func TestGenerateImagePullFailureProducesPlanOnlyWithCandidateReferences(t *test
 	if plan.PatchGenerated {
 		t.Fatalf("expected image pull to produce plan only:\n%s", plan.Diff)
 	}
-	if len(plan.Targets) != 1 || plan.Targets[0].Image != "docker://rhysd/actionlint:latest" {
+	if len(plan.Targets) != 1 || plan.Targets[0].Image != "docker://rhysd/actionlint:latest" || plan.Targets[0].Job != "go-lint" {
 		t.Fatalf("expected candidate image target, got %#v", plan.Targets)
+	}
+	if plan.Confidence != "high" {
+		t.Fatalf("expected high confidence from log artifact, got %s", plan.Confidence)
 	}
 }
 
