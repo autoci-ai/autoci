@@ -83,11 +83,10 @@ func WriteFailuresMarkdown(w io.Writer, analysis *failures.Analysis) error {
 		if theme.ExampleRun != "" {
 			fmt.Fprintf(w, "- Example run: `%s`\n", theme.ExampleRun)
 		}
-		writeFailureArtifacts(w, theme, "")
 		if len(theme.Evidence) > 0 {
 			fmt.Fprintln(w, "- Evidence:")
 			for _, evidence := range theme.Evidence {
-				fmt.Fprintf(w, "  - Run `%s`, job `%s`: %s\n", evidence.RunID, evidence.Job, evidence.LogExcerpt)
+				fmt.Fprintf(w, "  - Run `%s`, job `%s`: %s\n", evidence.RunID, evidence.Job, evidenceSummary(evidence))
 			}
 		}
 		fmt.Fprintf(w, "- Recommendation: %s\n\n", theme.Recommendation)
@@ -100,12 +99,12 @@ func writeFailureArtifacts(w io.Writer, theme failures.FailureTheme, indent stri
 		label string
 		items []string
 	}{
-		{"Extracted image references", theme.Artifacts.Images},
-		{"Extracted packages", theme.Artifacts.Packages},
-		{"Extracted modules", theme.Artifacts.Modules},
-		{"Extracted URLs", theme.Artifacts.URLs},
-		{"Extracted hosts", theme.Artifacts.Hosts},
-		{"Extracted Dockerfiles", theme.Artifacts.Dockerfiles},
+		{"Container images", theme.Artifacts.Images},
+		{"Packages", theme.Artifacts.Packages},
+		{"Source files", theme.Artifacts.Modules},
+		{"Registry URLs", theme.Artifacts.URLs},
+		{"Registry hosts", theme.Artifacts.Hosts},
+		{"Dockerfiles", theme.Artifacts.Dockerfiles},
 	}
 	for _, group := range groups {
 		if len(group.items) == 0 {
@@ -129,13 +128,66 @@ func writeFailureEvidence(w io.Writer, theme failures.FailureTheme, indent strin
 	}
 	for _, evidence := range theme.Evidence[:limit] {
 		fmt.Fprintf(w, "%s- Run: %s Job: %s\n", indent, evidence.RunID, evidence.Job)
-		if evidence.LogExcerpt != "" {
-			fmt.Fprintf(w, "%s  %s\n", indent, evidence.LogExcerpt)
+		fmt.Fprintf(w, "%s  %s\n", indent, evidenceSummary(evidence))
+	}
+}
+
+func evidenceSummary(evidence failures.FailureEvidence) string {
+	switch {
+	case evidence.Image != "":
+		parts := []string{"image " + evidence.Image}
+		if evidence.Registry != "" {
+			parts = append(parts, "registry "+evidence.Registry)
 		}
-		if len(evidence.ExtractedItems) > 0 {
-			fmt.Fprintf(w, "%s  Extracted: %v\n", indent, evidence.ExtractedItems)
+		if evidence.PullError != "" {
+			parts = append(parts, "error "+evidence.PullError)
+		}
+		return joinEvidenceParts(parts, evidence.LogExcerpt)
+	case evidence.PackageName != "":
+		parts := []string{"package " + evidence.PackageName}
+		if evidence.PackageVersion != "" {
+			parts = append(parts, "version "+evidence.PackageVersion)
+		}
+		if evidence.RegistryURL != "" {
+			parts = append(parts, "registry "+evidence.RegistryURL)
+		}
+		if evidence.InstallError != "" {
+			parts = append(parts, "error "+evidence.InstallError)
+		}
+		return joinEvidenceParts(parts, evidence.LogExcerpt)
+	case evidence.TestName != "":
+		return joinEvidenceParts([]string{"test " + evidence.TestName, evidence.AssertionMessage}, evidence.LogExcerpt)
+	case evidence.CompilerError != "":
+		return joinEvidenceParts([]string{evidence.SourceFile, evidence.CompilerError}, evidence.LogExcerpt)
+	case evidence.PullError != "":
+		return joinEvidenceParts([]string{"error " + evidence.PullError}, evidence.LogExcerpt)
+	default:
+		return evidence.LogExcerpt
+	}
+}
+
+func joinEvidenceParts(parts []string, fallback string) string {
+	var kept []string
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
 		}
 	}
+	if len(kept) == 0 {
+		return fallback
+	}
+	return fmt.Sprintf("%s.", joinStrings(kept, "; "))
+}
+
+func joinStrings(items []string, sep string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	result := items[0]
+	for _, item := range items[1:] {
+		result += sep + item
+	}
+	return result
 }
 
 func writeAggregationJobs(w io.Writer, analysis *failures.Analysis, verbose bool) {

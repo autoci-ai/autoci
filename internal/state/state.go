@@ -144,7 +144,10 @@ func findInSnapshot(command string, snapshot Snapshot, id string) (StoredItem, b
 	case "research":
 		return findInArray(command, root["opportunities"], id)
 	case "failures":
-		return findInArray(command, root["failureThemes"], id)
+		if item, ok := findInArray(command, root["failureThemes"], id); ok {
+			return item, ok
+		}
+		return findInArray(command, root["findings"], id)
 	case "profile":
 		return findInArray(command, root["findings"], id)
 	default:
@@ -178,7 +181,7 @@ func findInArray(source string, value any, id string) (StoredItem, bool) {
 			Occurrences:    intValue(object["occurrences"]),
 			Signature:      stringValue(object["signature"]),
 			ExtractedItems: extractedItems(object),
-			Artifacts:      artifactMap(object["artifacts"]),
+			Artifacts:      mergeArtifactMaps(artifactMap(object["artifacts"]), evidenceArtifactMap(object["evidence"])),
 		}, true
 	}
 	return StoredItem{}, false
@@ -289,6 +292,12 @@ func extractedItems(object map[string]any) []string {
 		if !ok {
 			continue
 		}
+		for _, key := range []string{"image", "packageName", "registryUrl", "registryHost", "registry", "testName", "sourceFile", "buildTarget", "missingDependency"} {
+			if extracted := stringValue(evidence[key]); extracted != "" && !seen[extracted] {
+				seen[extracted] = true
+				result = append(result, extracted)
+			}
+		}
 		for _, extracted := range stringSlice(evidence["extractedItems"]) {
 			if !seen[extracted] {
 				seen[extracted] = true
@@ -310,6 +319,59 @@ func artifactMap(value any) map[string][]string {
 		if len(items) > 0 {
 			result[key] = items
 		}
+	}
+	return result
+}
+
+func evidenceArtifactMap(value any) map[string][]string {
+	result := map[string][]string{}
+	items, ok := value.([]any)
+	if !ok {
+		return result
+	}
+	for _, item := range items {
+		evidence, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		addArtifact(result, "images", stringValue(evidence["image"]))
+		addArtifact(result, "packages", stringValue(evidence["packageName"]))
+		addArtifact(result, "urls", stringValue(evidence["registryUrl"]))
+		if host := stringValue(evidence["registryHost"]); host != "" {
+			addArtifact(result, "hosts", host)
+		} else {
+			addArtifact(result, "hosts", stringValue(evidence["registry"]))
+		}
+		if sourceFile := stringValue(evidence["sourceFile"]); sourceFile != "" && typedSourceEvidence(evidence) {
+			addArtifact(result, "modules", sourceFile)
+		}
+	}
+	return result
+}
+
+func typedSourceEvidence(evidence map[string]any) bool {
+	for _, key := range []string{"testName", "compilerError", "missingDependency", "assertionMessage"} {
+		if stringValue(evidence[key]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func addArtifact(items map[string][]string, key, value string) {
+	if value == "" {
+		return
+	}
+	items[key] = mergeStringSlices(items[key], []string{value})
+}
+
+func mergeArtifactMaps(a, b map[string][]string) map[string][]string {
+	result := map[string][]string{}
+	for key, items := range a {
+		result[key] = mergeStringSlices(result[key], items)
+	}
+	for key, items := range b {
+		result[key] = mergeStringSlices(result[key], items)
 	}
 	return result
 }

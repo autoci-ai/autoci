@@ -70,3 +70,38 @@ func TestFindItemMergesFailureArtifactsAfterResearchMatch(t *testing.T) {
 		t.Fatalf("merged item = %#v", item)
 	}
 }
+
+func TestFindItemReadsNormalizedFailureEvidence(t *testing.T) {
+	dir := t.TempDir()
+	failuresData := map[string]any{
+		"findings": []map[string]any{{
+			"id":          "failure-theme-image-pull-failure",
+			"kind":        "failure",
+			"signature":   "image pull failure",
+			"occurrences": 6,
+			"jobs":        []string{"go-lint"},
+			"evidence": []map[string]any{{
+				"registry":     "docker.io",
+				"registryHost": "docker.io",
+				"image":        "golang:1.24",
+				"pullError":    "manifest unknown",
+			}},
+		}},
+	}
+	if err := Write(dir, "failures", "pr.yml", failuresData); err != nil {
+		t.Fatal(err)
+	}
+	item, ok := FindItem(dir, "pr.yml", "failure-theme-image-pull-failure")
+	if !ok {
+		t.Fatal("expected stored item")
+	}
+	if item.Signature != "image pull failure" || item.Occurrences != 6 {
+		t.Fatalf("item = %#v", item)
+	}
+	if len(item.Artifacts["images"]) != 1 || item.Artifacts["images"][0] != "golang:1.24" {
+		t.Fatalf("artifacts = %#v", item.Artifacts)
+	}
+	if len(item.ExtractedItems) == 0 {
+		t.Fatalf("extracted items = %#v", item.ExtractedItems)
+	}
+}

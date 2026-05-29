@@ -31,7 +31,62 @@ func TestAnalyzeGroupsFailuresByTheme(t *testing.T) {
 	if len(analysis.FailureThemes[0].Artifacts.Images) != 2 {
 		t.Fatalf("images = %#v", analysis.FailureThemes[0].Artifacts.Images)
 	}
+	if len(analysis.Findings) != 2 || analysis.Findings[0].ID != "failure-theme-image-pull-failure" {
+		t.Fatalf("findings = %#v", analysis.Findings)
+	}
 	if len(analysis.AggregationJobs) != 1 || analysis.AggregationJobs[0].Job != "gate" {
 		t.Fatalf("aggregation jobs = %#v", analysis.AggregationJobs)
+	}
+}
+
+func TestImagePullEvidenceDoesNotCollectUnrelatedPathsModulesOrURLs(t *testing.T) {
+	message := `go test ./internal/failures
+github.com/autoci-ai/autoci/internal/failures failed
+/home/runner/work/autoci/internal/failures/failures.go:12
+https://example.com/docs/image-pull
+failed to pull image docker://golang:1.24: manifest unknown`
+
+	analysis := Analyze("pr.yml", 10, 2, []Observation{{
+		Job:     "go-lint",
+		RunID:   "run-1",
+		Message: message,
+	}})
+
+	theme := analysis.FailureThemes[0]
+	if theme.ID != "failure-theme-image-pull-failure" {
+		t.Fatalf("id = %q", theme.ID)
+	}
+	if got := theme.Artifacts.Images; len(got) != 1 || got[0] != "docker://golang:1.24" {
+		t.Fatalf("images = %#v", got)
+	}
+	if len(theme.Artifacts.Modules) != 0 || len(theme.Artifacts.URLs) != 0 || len(theme.Artifacts.Packages) != 0 {
+		t.Fatalf("polluted artifacts = %#v", theme.Artifacts)
+	}
+	if len(theme.Evidence) != 1 || theme.Evidence[0].PullError != "manifest unknown" {
+		t.Fatalf("evidence = %#v", theme.Evidence)
+	}
+}
+
+func TestNPMEvidenceIsFailureSpecific(t *testing.T) {
+	analysis := Analyze("pr.yml", 10, 2, []Observation{{
+		Job:   "frontend",
+		RunID: "run-1",
+		Message: `npm ERR! ERESOLVE unable to resolve dependency tree
+npm ERR! peer react@"^18" from @testing-library/react@14.1.2
+npm ERR! registry https://registry.npmjs.org/`,
+	}})
+
+	theme := analysis.FailureThemes[0]
+	if theme.ID != "failure-theme-npm-install-failure" {
+		t.Fatalf("id = %q", theme.ID)
+	}
+	if len(theme.Artifacts.Packages) == 0 {
+		t.Fatalf("packages = %#v", theme.Artifacts.Packages)
+	}
+	if len(theme.Artifacts.Modules) != 0 {
+		t.Fatalf("modules = %#v", theme.Artifacts.Modules)
+	}
+	if len(theme.Evidence) == 0 || theme.Evidence[0].InstallError == "" {
+		t.Fatalf("evidence = %#v", theme.Evidence)
 	}
 }

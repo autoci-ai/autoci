@@ -10,8 +10,20 @@ type Analysis struct {
 	Workflow        string           `json:"workflow"`
 	RunsAnalyzed    int              `json:"runsAnalyzed"`
 	FailedRuns      int              `json:"failedRuns"`
+	Findings        []Finding        `json:"findings,omitempty"`
 	FailureThemes   []FailureTheme   `json:"failureThemes"`
 	AggregationJobs []AggregationJob `json:"aggregationJobs,omitempty"`
+}
+
+type Finding struct {
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	Category       string            `json:"category"`
+	Signature      string            `json:"signature"`
+	Occurrences    int               `json:"occurrences"`
+	Jobs           []string          `json:"jobs,omitempty"`
+	Recommendation string            `json:"recommendation,omitempty"`
+	Evidence       []FailureEvidence `json:"evidence,omitempty"`
 }
 
 type FailureTheme struct {
@@ -26,10 +38,28 @@ type FailureTheme struct {
 }
 
 type FailureEvidence struct {
-	RunID          string   `json:"runId,omitempty"`
-	Job            string   `json:"job,omitempty"`
-	LogExcerpt     string   `json:"logExcerpt,omitempty"`
-	ExtractedItems []string `json:"extractedItems,omitempty"`
+	RunID              string   `json:"runId,omitempty"`
+	Job                string   `json:"job,omitempty"`
+	LogExcerpt         string   `json:"logExcerpt,omitempty"`
+	Registry           string   `json:"registry,omitempty"`
+	RegistryHost       string   `json:"registryHost,omitempty"`
+	Image              string   `json:"image,omitempty"`
+	ImageTag           string   `json:"imageTag,omitempty"`
+	ImageDigest        string   `json:"imageDigest,omitempty"`
+	PullError          string   `json:"pullError,omitempty"`
+	PackageName        string   `json:"packageName,omitempty"`
+	PackageVersion     string   `json:"packageVersion,omitempty"`
+	RegistryURL        string   `json:"registryUrl,omitempty"`
+	DependencyConflict string   `json:"dependencyConflict,omitempty"`
+	InstallError       string   `json:"installError,omitempty"`
+	TestName           string   `json:"testName,omitempty"`
+	StackTrace         string   `json:"stackTrace,omitempty"`
+	SourceFile         string   `json:"sourceFile,omitempty"`
+	AssertionMessage   string   `json:"assertionMessage,omitempty"`
+	BuildTarget        string   `json:"buildTarget,omitempty"`
+	CompilerError      string   `json:"compilerError,omitempty"`
+	MissingDependency  string   `json:"missingDependency,omitempty"`
+	ExtractedItems     []string `json:"extractedItems,omitempty"`
 }
 
 type FailureArtifacts struct {
@@ -79,11 +109,10 @@ func Analyze(workflow string, runsAnalyzed, failedRuns int, observations []Obser
 		if observation.Job != "" {
 			theme.jobs[observation.Job] = true
 		}
-		evidence := Evidence(observation)
-		if len(evidence.ExtractedItems) > 0 || evidence.LogExcerpt != "" {
-			theme.Evidence = append(theme.Evidence, evidence)
+		for _, evidence := range ExtractEvidence(signature, observation) {
+			theme.Evidence = appendEvidence(theme.Evidence, evidence)
+			mergeArtifacts(&theme.Artifacts, artifactsFromEvidence(evidence))
 		}
-		mergeArtifacts(&theme.Artifacts, ExtractArtifacts(observation.Message))
 	}
 
 	analysis := Analysis{
@@ -98,13 +127,30 @@ func Analyze(workflow string, runsAnalyzed, failedRuns int, observations []Obser
 			theme.Jobs = append(theme.Jobs, job)
 		}
 		sort.Strings(theme.Jobs)
+		theme.FailureTheme.Artifacts = compactArtifacts(theme.Artifacts)
 		analysis.FailureThemes = append(analysis.FailureThemes, theme.FailureTheme)
+		analysis.Findings = append(analysis.Findings, Finding{
+			ID:             theme.ID,
+			Kind:           "failure",
+			Category:       failureCategory(theme.Signature),
+			Signature:      theme.Signature,
+			Occurrences:    theme.Occurrences,
+			Jobs:           theme.Jobs,
+			Recommendation: theme.Recommendation,
+			Evidence:       theme.Evidence,
+		})
 	}
 	sort.SliceStable(analysis.FailureThemes, func(i, j int) bool {
 		if analysis.FailureThemes[i].Occurrences == analysis.FailureThemes[j].Occurrences {
 			return analysis.FailureThemes[i].ID < analysis.FailureThemes[j].ID
 		}
 		return analysis.FailureThemes[i].Occurrences > analysis.FailureThemes[j].Occurrences
+	})
+	sort.SliceStable(analysis.Findings, func(i, j int) bool {
+		if analysis.Findings[i].Occurrences == analysis.Findings[j].Occurrences {
+			return analysis.Findings[i].ID < analysis.Findings[j].ID
+		}
+		return analysis.Findings[i].Occurrences > analysis.Findings[j].Occurrences
 	})
 	for job, occurrences := range aggregationJobs {
 		analysis.AggregationJobs = append(analysis.AggregationJobs, AggregationJob{Job: job, Occurrences: occurrences})
@@ -123,36 +169,25 @@ type themeBuilder struct {
 	jobs map[string]bool
 }
 
-func Evidence(observation Observation) FailureEvidence {
-	return FailureEvidence{
-		RunID:          observation.RunID,
-		Job:            observation.Job,
-		LogExcerpt:     excerpt(observation.Message),
-		ExtractedItems: ExtractItems(observation.Message),
-	}
+type EvidenceExtractor interface {
+	Extract(Observation) []FailureEvidence
 }
 
-func ExtractItems(message string) []string {
-	artifacts := ExtractArtifacts(message)
-	var items []string
-	items = append(items, artifacts.Images...)
-	items = append(items, artifacts.Packages...)
-	items = append(items, artifacts.Modules...)
-	items = append(items, artifacts.URLs...)
-	items = append(items, artifacts.Hosts...)
-	items = append(items, artifacts.Dockerfiles...)
-	return uniqueSorted(items)
-}
-
-func ExtractArtifacts(message string) FailureArtifacts {
-	return FailureArtifacts{
-		Images:      uniqueSorted(matches(message, imagePattern)),
-		Packages:    uniqueSorted(packageMatches(message)),
-		Modules:     uniqueSorted(matches(message, modulePattern)),
-		URLs:        uniqueSorted(matches(message, urlPattern)),
-		Hosts:       uniqueSorted(hostMatches(message)),
-		Dockerfiles: uniqueSorted(matches(message, dockerfilePattern)),
+func ExtractEvidence(signature string, observation Observation) []FailureEvidence {
+	var extractor EvidenceExtractor
+	switch signature {
+	case "image pull failure", "image pull timeout":
+		extractor = ImagePullFailureExtractor{}
+	case "npm install failure":
+		extractor = NPMFailureExtractor{}
+	case "test failure", "jest timeout":
+		extractor = TestFailureExtractor{}
+	case "build failure":
+		extractor = BuildFailureExtractor{}
+	default:
+		extractor = GenericFailureExtractor{}
 	}
+	return extractor.Extract(observation)
 }
 
 func IsAggregationJob(job string) bool {
@@ -175,8 +210,14 @@ func Signature(message string) string {
 		{[]string{"golangci-lint", "timed out"}, "golangci-lint timeout"},
 		{[]string{"jest", "timeout"}, "jest timeout"},
 		{[]string{"npm", "install"}, "npm install failure"},
+		{[]string{"npm err!"}, "npm install failure"},
 		{[]string{"image", "pull"}, "image pull failure"},
 		{[]string{"pull", "timeout"}, "image pull timeout"},
+		{[]string{"failed to solve"}, "build failure"},
+		{[]string{"compiler error"}, "build failure"},
+		{[]string{"undefined:"}, "build failure"},
+		{[]string{"test failed"}, "test failure"},
+		{[]string{"assertion"}, "test failure"},
 		{[]string{"context deadline exceeded"}, "context deadline exceeded"},
 		{[]string{"permission denied"}, "permission denied"},
 		{[]string{"no space left"}, "disk space exhausted"},
@@ -229,12 +270,12 @@ func containsAll(value string, terms []string) bool {
 }
 
 var (
-	imagePattern      = regexp.MustCompile(`(?:docker://|ghcr\.io/|docker\.io/|quay\.io/|[a-zA-Z0-9.-]+(?::[0-9]+)?/)[a-zA-Z0-9._/-]+(?::[a-zA-Z0-9._-]+|@[a-zA-Z0-9:+._-]+)?`)
-	urlPattern        = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	modulePattern     = regexp.MustCompile(`[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/[a-zA-Z0-9._~/-]+`)
-	dockerfilePattern = regexp.MustCompile(`(?:^|\s)(?:\.?/)?Dockerfile(?:\.[a-zA-Z0-9._-]+)?`)
-	packagePattern    = regexp.MustCompile(`(?:npm|yarn|pnpm)(?: ERR!| error)?[^@\n]*(@?[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+|[a-zA-Z0-9._-]+)`)
-	hostPattern       = regexp.MustCompile(`(?:registry|host|url|from|to)[:= ]+(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(?:[:/][^\s]*)?`)
+	imagePattern       = regexp.MustCompile(`(?:docker://)?(?:(?:[a-zA-Z0-9.-]+(?::[0-9]+)?)/)?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*(?::[a-zA-Z0-9._-]+|@sha256:[a-fA-F0-9]{16,64})`)
+	urlPattern         = regexp.MustCompile(`https?://[^\s"'<>]+`)
+	npmPackagePattern  = regexp.MustCompile(`(@?[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)?)(?:@([0-9][a-zA-Z0-9._+-]*))?`)
+	testNamePattern    = regexp.MustCompile(`(?:FAIL|--- FAIL:|not ok)\s+([A-Za-z0-9_./:-]+)`)
+	sourceFilePattern  = regexp.MustCompile(`(?:^|\s)([A-Za-z0-9_./-]+\.(?:go|js|jsx|ts|tsx|java|py|rb|c|cc|cpp|h))(?::[0-9]+(?::[0-9]+)?)?`)
+	buildTargetPattern = regexp.MustCompile(`(?:target|building|make)\s+([A-Za-z0-9_./:-]+)`)
 )
 
 func matches(message string, pattern *regexp.Regexp) []string {
@@ -248,33 +289,353 @@ func matches(message string, pattern *regexp.Regexp) []string {
 	return result
 }
 
-func packageMatches(message string) []string {
-	var result []string
-	for _, match := range packagePattern.FindAllStringSubmatch(message, -1) {
-		if len(match) > 1 && match[1] != "" && !isPackageNoise(match[1]) {
-			result = append(result, match[1])
+type ImagePullFailureExtractor struct{}
+
+func (ImagePullFailureExtractor) Extract(observation Observation) []FailureEvidence {
+	var result []FailureEvidence
+	for _, line := range diagnosticLines(observation.Message, []string{"image", "pull", "manifest", "registry", "container"}) {
+		refs := imageReferences(line)
+		if len(refs) == 0 {
+			evidence := baseEvidence(observation, line)
+			evidence.PullError = pullError(line)
+			if evidence.PullError != "" {
+				result = append(result, evidence)
+			}
+			continue
+		}
+		for _, ref := range refs {
+			evidence := baseEvidence(observation, line)
+			evidence.Image = ref
+			evidence.Registry, evidence.RegistryHost = imageRegistry(ref)
+			evidence.ImageTag = imageTag(ref)
+			evidence.ImageDigest = imageDigest(ref)
+			evidence.PullError = pullError(line)
+			result = append(result, evidence)
 		}
 	}
 	return result
 }
 
-func hostMatches(message string) []string {
-	var result []string
-	for _, match := range hostPattern.FindAllStringSubmatch(message, -1) {
-		if len(match) > 2 && match[2] != "" {
-			result = append(result, match[2])
+type NPMFailureExtractor struct{}
+
+func (NPMFailureExtractor) Extract(observation Observation) []FailureEvidence {
+	var result []FailureEvidence
+	for _, line := range diagnosticLines(observation.Message, []string{"npm", "pnpm", "yarn", "eresolve", "registry", "dependency"}) {
+		item := baseEvidence(observation, line)
+		item.RegistryURL = firstURL(line)
+		item.DependencyConflict = dependencyConflict(line)
+		item.InstallError = installError(line)
+		hasPackage := false
+		for _, pkg := range npmPackages(line) {
+			hasPackage = true
+			next := item
+			next.PackageName = pkg.name
+			next.PackageVersion = pkg.version
+			result = append(result, next)
+		}
+		if !hasPackage && (item.RegistryURL != "" || item.DependencyConflict != "" || item.InstallError != "") {
+			result = append(result, item)
 		}
 	}
-	for _, rawURL := range matches(message, urlPattern) {
-		host := strings.TrimPrefix(strings.TrimPrefix(rawURL, "https://"), "http://")
-		if idx := strings.IndexAny(host, "/:"); idx >= 0 {
-			host = host[:idx]
+	return result
+}
+
+type TestFailureExtractor struct{}
+
+func (TestFailureExtractor) Extract(observation Observation) []FailureEvidence {
+	var result []FailureEvidence
+	for _, line := range diagnosticLines(observation.Message, []string{"fail", "assert", "expect", "panic", "stack"}) {
+		evidence := baseEvidence(observation, line)
+		evidence.TestName = firstSubmatch(line, testNamePattern)
+		evidence.SourceFile = firstSubmatch(line, sourceFilePattern)
+		evidence.AssertionMessage = assertionMessage(line)
+		if strings.Contains(strings.ToLower(line), "stack") || strings.Contains(line, "\tat ") {
+			evidence.StackTrace = truncate(line, 240)
 		}
-		if host != "" {
-			result = append(result, host)
+		if evidence.TestName != "" || evidence.SourceFile != "" || evidence.AssertionMessage != "" || evidence.StackTrace != "" {
+			result = append(result, evidence)
+		}
+	}
+	return result
+}
+
+type BuildFailureExtractor struct{}
+
+func (BuildFailureExtractor) Extract(observation Observation) []FailureEvidence {
+	var result []FailureEvidence
+	for _, line := range diagnosticLines(observation.Message, []string{"error", "failed", "undefined", "missing", "target", "build"}) {
+		evidence := baseEvidence(observation, line)
+		evidence.SourceFile = firstSubmatch(line, sourceFilePattern)
+		evidence.BuildTarget = firstSubmatch(strings.ToLower(line), buildTargetPattern)
+		evidence.CompilerError = compilerError(line)
+		evidence.MissingDependency = missingDependency(line)
+		if evidence.SourceFile != "" || evidence.BuildTarget != "" || evidence.CompilerError != "" || evidence.MissingDependency != "" {
+			result = append(result, evidence)
+		}
+	}
+	return result
+}
+
+type GenericFailureExtractor struct{}
+
+func (GenericFailureExtractor) Extract(observation Observation) []FailureEvidence {
+	if excerpt := excerpt(observation.Message); excerpt != "" {
+		return []FailureEvidence{baseEvidence(observation, excerpt)}
+	}
+	return nil
+}
+
+func baseEvidence(observation Observation, line string) FailureEvidence {
+	return FailureEvidence{
+		RunID:      observation.RunID,
+		Job:        observation.Job,
+		LogExcerpt: truncate(strings.TrimSpace(line), 240),
+	}
+}
+
+func diagnosticLines(message string, terms []string) []string {
+	var result []string
+	for _, line := range strings.Split(message, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				result = append(result, trimmed)
+				break
+			}
+		}
+	}
+	if len(result) == 0 {
+		if first := excerpt(message); first != "" {
+			result = append(result, first)
+		}
+	}
+	return result
+}
+
+func imageReferences(line string) []string {
+	var result []string
+	for _, candidate := range matches(line, imagePattern) {
+		if isDiagnosticImage(candidate) {
+			result = append(result, candidate)
 		}
 	}
 	return uniqueSorted(result)
+}
+
+func isDiagnosticImage(value string) bool {
+	if strings.HasPrefix(value, "docker://") || strings.Contains(value, "@sha256:") {
+		return true
+	}
+	if strings.Contains(value, ":") && !strings.Contains(value, "://") {
+		return true
+	}
+	for _, prefix := range []string{"ghcr.io/", "docker.io/", "quay.io/", "gcr.io/", "registry.k8s.io/"} {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func imageRegistry(ref string) (string, string) {
+	value := strings.TrimPrefix(ref, "docker://")
+	parts := strings.Split(value, "/")
+	if len(parts) > 1 && (strings.Contains(parts[0], ".") || strings.Contains(parts[0], ":") || parts[0] == "localhost") {
+		return parts[0], parts[0]
+	}
+	return "docker.io", "docker.io"
+}
+
+func imageTag(ref string) string {
+	if idx := strings.LastIndex(ref, ":"); idx >= 0 && !strings.Contains(ref[idx:], "/") && !strings.Contains(ref[idx:], "@") {
+		return ref[idx+1:]
+	}
+	return ""
+}
+
+func imageDigest(ref string) string {
+	if idx := strings.Index(ref, "@"); idx >= 0 {
+		return ref[idx+1:]
+	}
+	return ""
+}
+
+func pullError(line string) string {
+	lower := strings.ToLower(line)
+	for _, term := range []string{"manifest unknown", "not found", "unauthorized", "denied", "context deadline exceeded", "timeout", "pull access denied", "too many requests"} {
+		if strings.Contains(lower, term) {
+			return term
+		}
+	}
+	if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+		return truncate(line, 160)
+	}
+	return ""
+}
+
+type npmPackage struct {
+	name    string
+	version string
+}
+
+func npmPackages(line string) []npmPackage {
+	var result []npmPackage
+	lower := strings.ToLower(line)
+	if !(strings.Contains(lower, "npm") || strings.Contains(lower, "pnpm") || strings.Contains(lower, "yarn") || strings.Contains(lower, "package") || strings.Contains(lower, "dependency")) {
+		return result
+	}
+	for _, match := range npmPackagePattern.FindAllStringSubmatch(line, -1) {
+		if len(match) < 2 || match[1] == "" {
+			continue
+		}
+		name := strings.Trim(match[1], `"'<>.,;:()`)
+		if isPackageNoise(name) || strings.Contains(name, ".") || strings.Contains(name, "/Users/") {
+			continue
+		}
+		version := ""
+		if len(match) > 2 {
+			version = match[2]
+		}
+		result = append(result, npmPackage{name: name, version: version})
+	}
+	return result
+}
+
+func firstURL(line string) string {
+	urls := matches(line, urlPattern)
+	if len(urls) == 0 {
+		return ""
+	}
+	return urls[0]
+}
+
+func dependencyConflict(line string) string {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "eresolve") || strings.Contains(lower, "peer dep") || strings.Contains(lower, "dependency conflict") {
+		return truncate(line, 200)
+	}
+	return ""
+}
+
+func installError(line string) string {
+	lower := strings.ToLower(line)
+	for _, term := range []string{"npm err!", "pnpm err!", "yarn error", "eresolve", "enoent", "e404", "e401"} {
+		if strings.Contains(lower, term) {
+			return truncate(line, 200)
+		}
+	}
+	if strings.Contains(lower, "install") && (strings.Contains(lower, "failed") || strings.Contains(lower, "error")) {
+		return truncate(line, 200)
+	}
+	return ""
+}
+
+func assertionMessage(line string) string {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "assert") || strings.Contains(lower, "expected") || strings.Contains(lower, "received") {
+		return truncate(line, 200)
+	}
+	return ""
+}
+
+func compilerError(line string) string {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "undefined:") || strings.Contains(lower, "compiler error") || strings.Contains(lower, "syntax error") || strings.Contains(lower, "error:") {
+		return truncate(line, 200)
+	}
+	return ""
+}
+
+func missingDependency(line string) string {
+	lower := strings.ToLower(line)
+	for _, term := range []string{"cannot find module", "module not found", "no required module provides", "package not found"} {
+		if strings.Contains(lower, term) {
+			return truncate(line, 200)
+		}
+	}
+	return ""
+}
+
+func firstSubmatch(line string, pattern *regexp.Regexp) string {
+	match := pattern.FindStringSubmatch(line)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func appendEvidence(items []FailureEvidence, evidence FailureEvidence) []FailureEvidence {
+	key := evidenceKey(evidence)
+	for _, existing := range items {
+		if evidenceKey(existing) == key {
+			return items
+		}
+	}
+	return append(items, evidence)
+}
+
+func evidenceKey(evidence FailureEvidence) string {
+	return strings.Join([]string{
+		evidence.Job,
+		evidence.Image,
+		evidence.PackageName,
+		evidence.TestName,
+		evidence.SourceFile,
+		evidence.BuildTarget,
+		evidence.PullError,
+		evidence.InstallError,
+		evidence.CompilerError,
+		evidence.LogExcerpt,
+	}, "\x00")
+}
+
+func artifactsFromEvidence(evidence FailureEvidence) FailureArtifacts {
+	var artifacts FailureArtifacts
+	if evidence.Image != "" {
+		artifacts.Images = []string{evidence.Image}
+	}
+	if evidence.PackageName != "" {
+		artifacts.Packages = []string{evidence.PackageName}
+	}
+	if evidence.RegistryURL != "" {
+		artifacts.URLs = []string{evidence.RegistryURL}
+	}
+	if evidence.RegistryHost != "" {
+		artifacts.Hosts = []string{evidence.RegistryHost}
+	}
+	if evidence.SourceFile != "" && (evidence.TestName != "" || evidence.CompilerError != "" || evidence.MissingDependency != "") {
+		artifacts.Modules = []string{evidence.SourceFile}
+	}
+	return artifacts
+}
+
+func compactArtifacts(artifacts FailureArtifacts) FailureArtifacts {
+	artifacts.Images = uniqueSorted(artifacts.Images)
+	artifacts.Packages = uniqueSorted(artifacts.Packages)
+	artifacts.Modules = uniqueSorted(artifacts.Modules)
+	artifacts.URLs = uniqueSorted(artifacts.URLs)
+	artifacts.Hosts = uniqueSorted(artifacts.Hosts)
+	artifacts.Dockerfiles = uniqueSorted(artifacts.Dockerfiles)
+	return artifacts
+}
+
+func failureCategory(signature string) string {
+	switch signature {
+	case "image pull failure", "image pull timeout":
+		return "container-registry"
+	case "npm install failure":
+		return "dependency-install"
+	case "test failure", "jest timeout":
+		return "test"
+	case "build failure":
+		return "build"
+	default:
+		return "failure"
+	}
 }
 
 func mergeArtifacts(dst *FailureArtifacts, src FailureArtifacts) {
