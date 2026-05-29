@@ -45,7 +45,7 @@ func newFailuresCommand() *cobra.Command {
 			if format == "json" {
 				return report.WriteFailuresJSON(cmd.OutOrStdout(), analysis)
 			}
-			report.WriteFailuresTerminal(cmd.OutOrStdout(), analysis)
+			report.WriteFailuresTerminal(cmd.OutOrStdout(), analysis, cfg.Verbose)
 			if reportPath != "" {
 				return report.WriteFailuresMarkdownFile(reportPath, analysis)
 			}

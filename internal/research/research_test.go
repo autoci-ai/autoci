@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
 )
 
@@ -46,6 +47,34 @@ func TestFromProfilePrioritizesAndHidesBacklog(t *testing.T) {
 	}
 	if plan.TopRecommendation.WhyNow == "" {
 		t.Fatal("expected top recommendation why now")
+	}
+}
+
+func TestFromProfileAndFailuresPrioritizesFailureThemes(t *testing.T) {
+	runtimeProfile := &profile.Profile{
+		Workflows: []profile.WorkflowProfile{{RunsAnalyzed: 10}},
+		Findings: []profile.Finding{
+			{ID: "flaky-job", Workflow: "pr", Job: "go-lint", Evidence: "Failure rate 19% across 10 runs."},
+		},
+	}
+	failureAnalysis := &failures.Analysis{
+		FailureThemes: []failures.FailureTheme{{
+			ID:          "failure-theme-image-pull-failure",
+			Signature:   "image pull failure",
+			Occurrences: 6,
+			Jobs:        []string{"go-lint", "integration-test:matrix-03"},
+		}},
+	}
+
+	plan := FromProfileAndFailures("pr.yml", runtimeProfile, failureAnalysis, false)
+	if len(plan.Opportunities) == 0 {
+		t.Fatal("expected opportunities")
+	}
+	if plan.Opportunities[0].ID != "image-pull-failure" {
+		t.Fatalf("expected image pull theme first, got %s", plan.Opportunities[0].ID)
+	}
+	if !strings.Contains(plan.Opportunities[0].Evidence, "6 occurrences across 2 jobs") {
+		t.Fatalf("unexpected evidence: %s", plan.Opportunities[0].Evidence)
 	}
 }
 

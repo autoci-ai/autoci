@@ -146,4 +146,4 @@ Current research output includes a top recommendation and the top three highest-
 
 ## Failure Analysis
 
-`autoci failures` inspects recent failed workflow runs and groups failed jobs by deterministic failure signatures. It is intended to answer what is breaking, while `profile` answers what is happening and `research` answers what to investigate next.
+`autoci failures` inspects recent failed workflow runs and groups failures into deterministic failure themes. Aggregation jobs such as `gate`, `required`, and `status` are excluded from root-cause ranking by default. It is intended to answer what is breaking, while `profile` answers what is happening and `research` answers what to investigate next.

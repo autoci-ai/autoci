@@ -97,9 +97,10 @@ func (p DepotProvider) Failures(ctx context.Context, workflowName string) (*fail
 				message = job.Status
 			}
 			observations = append(observations, failures.Observation{
-				Job:     jobName,
-				RunID:   detail.Run.RunID,
-				Message: message,
+				Job:          jobName,
+				RunID:        detail.Run.RunID,
+				Message:      message,
+				IsAggregator: isAggregationJob(jobName, jobDependsOnCount(job)),
 			})
 		}
 	}

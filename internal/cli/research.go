@@ -43,7 +43,8 @@ func newResearchCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("profile CI history: %w", err)
 			}
-			plan := research.FromProfileWithOptions(workflowName, runtimeProfile, cfg.Verbose)
+			failureAnalysis, _ := depot.Failures(cmd.Context(), workflowName)
+			plan := research.FromProfileAndFailures(workflowName, runtimeProfile, failureAnalysis, cfg.Verbose)
 			if format == "json" {
 				return report.WriteResearchJSON(cmd.OutOrStdout(), plan)
 			}

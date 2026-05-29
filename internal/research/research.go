@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/autoci-ai/autoci/internal/failures"
 	"github.com/autoci-ai/autoci/internal/profile"
 )
 
@@ -71,6 +72,35 @@ func FromProfileWithOptions(workflowName string, runtimeProfile *profile.Profile
 	}
 	plan.TopRecommendation = topRecommendation(plan.Opportunities)
 	return plan
+}
+
+func FromProfileAndFailures(workflowName string, runtimeProfile *profile.Profile, failureAnalysis *failures.Analysis, verbose bool) Plan {
+	plan := FromProfileWithOptions(workflowName, runtimeProfile, true)
+	if failureAnalysis != nil {
+		for _, theme := range failureAnalysis.FailureThemes {
+			plan.Opportunities = append(plan.Opportunities, opportunityFromFailureTheme(workflowName, theme))
+		}
+	}
+	scored := make([]scoredOpportunity, 0, len(plan.Opportunities))
+	for _, opportunity := range plan.Opportunities {
+		scored = append(scored, scoredOpportunity{opportunity: opportunity, score: opportunityScore(opportunity)})
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+	limit := defaultOpportunityLimit
+	if verbose || len(scored) < limit {
+		limit = len(scored)
+	}
+	result := Plan{Workflow: workflowName, RunsAnalyzed: plan.RunsAnalyzed, Opportunities: []ResearchOpportunity{}}
+	for _, item := range scored[:limit] {
+		result.Opportunities = append(result.Opportunities, item.opportunity)
+	}
+	if !verbose && len(scored) > limit {
+		result.HiddenCount = len(scored) - limit
+	}
+	result.TopRecommendation = topRecommendation(result.Opportunities)
+	return result
 }
 
 func buildBacklog(workflowName string, findings []profile.Finding) []scoredOpportunity {
@@ -205,6 +235,58 @@ func groupedFlakyOpportunity(workflowName string, findings []profile.Finding) (R
 		EstimatedImpact:   "Improved workflow reliability and less time spent chasing repeated CI failures.",
 		SuggestedCommands: suggestedCommands(workflowName),
 	}, score
+}
+
+func opportunityFromFailureTheme(workflowName string, theme failures.FailureTheme) ResearchOpportunity {
+	return ResearchOpportunity{
+		ID:                strings.TrimPrefix(theme.ID, "failure-theme-"),
+		Title:             "Investigate " + theme.Signature + " failures",
+		Hypothesis:        "A recurring infrastructure or dependency failure theme is causing multiple job failures.",
+		Evidence:          failureThemeEvidence(theme),
+		Experiment:        experimentForFailureTheme(theme),
+		SuccessCriteria:   "The failure theme no longer recurs in recent failed runs or the root cause is identified.",
+		Risk:              "Low",
+		EstimatedImpact:   "Reduces repeated CI failures caused by the same root cause.",
+		SuggestedCommands: suggestedCommands(workflowName),
+	}
+}
+
+func failureThemeEvidence(theme failures.FailureTheme) string {
+	if len(theme.Jobs) > 1 {
+		return fmt.Sprintf("%d occurrences across %d jobs: %s.", theme.Occurrences, len(theme.Jobs), strings.Join(theme.Jobs, ", "))
+	}
+	if len(theme.Jobs) == 1 {
+		return fmt.Sprintf("%d occurrences in %s.", theme.Occurrences, theme.Jobs[0])
+	}
+	return fmt.Sprintf("%d occurrences.", theme.Occurrences)
+}
+
+func experimentForFailureTheme(theme failures.FailureTheme) string {
+	switch theme.Signature {
+	case "image pull failure", "image pull timeout":
+		return "Compare affected jobs, image sources, registry behavior, cache behavior, and image pinning strategy."
+	case "npm install failure":
+		return "Compare dependency install logs across failed runs and inspect registry availability, lockfile changes, and cache behavior."
+	default:
+		return "Compare affected jobs and failed-run logs to identify the shared root cause."
+	}
+}
+
+func opportunityScore(opportunity ResearchOpportunity) int {
+	switch {
+	case strings.HasPrefix(opportunity.ID, "image-pull"):
+		return 130
+	case strings.HasPrefix(opportunity.ID, "npm-install"):
+		return 120
+	case opportunity.ID == "job-instability":
+		return 110
+	case opportunity.ID == "workflow-reliability":
+		return 100
+	case strings.HasPrefix(opportunity.ID, "high-leverage-runtime"):
+		return 80
+	default:
+		return 50
+	}
 }
 
 func topRecommendation(opportunities []ResearchOpportunity) TopRecommendation {
