@@ -1,0 +1,25 @@
+name: Validate ElasticClaw Workflow
+
+on:
+  pull_request:
+    paths:
+      - '.elasticclaw/**'
+
+jobs:
+  validate:
+    name: Validate workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate workflow (github-issue)
+        uses: elasticclaw/actions/publish-workflow@main
+        with:
+          hub-endpoint: https://factory.marcecampbell.com
+          token: ${{ secrets.ELASTICCLAW_TOKEN }}
+          workspace: autoci
+          path: .elasticclaw/workflows/github-issue.yaml
+          dry-run: true

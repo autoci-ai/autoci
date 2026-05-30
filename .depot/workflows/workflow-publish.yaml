@@ -1,0 +1,27 @@
+name: Publish ElasticClaw Workflow
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.elasticclaw/**'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    name: Publish workflows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish workflow (github-issue)
+        uses: elasticclaw/actions/publish-workflow@main
+        with:
+          hub-endpoint: https://factory.marcecampbell.com
+          token: ${{ secrets.ELASTICCLAW_TOKEN }}
+          workspace: autoci
+          path: .elasticclaw/workflows/github-issue.yaml
